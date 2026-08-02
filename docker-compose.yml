@@ -1,0 +1,38 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-yaadly}
+      POSTGRES_USER: ${POSTGRES_USER:-yaadly}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-yaadly}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-yaadly} -d ${POSTGRES_DB:-yaadly}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  web:
+    build: .
+    restart: unless-stopped
+    command: ./entrypoint.sh
+    env_file: .env
+    environment:
+      - POSTGRES_HOST=db
+      - USE_SQLITE=false
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      # Mount the Google service-account key so the backend can transcribe voice
+      # entries. Create the file on the host and reference it via
+      # GOOGLE_SPEECH_CREDENTIALS_FILE in .env:
+      #   GOOGLE_SPEECH_CREDENTIALS_FILE=/secrets/gcp-stt-service-account.json
+      # - ./secrets/gcp-stt-service-account.json:/secrets/gcp-stt-service-account.json:ro
+
+volumes:
+  pgdata:
