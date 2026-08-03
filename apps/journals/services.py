@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+from pathlib import Path
 
 import requests
 from django.conf import settings
@@ -99,8 +100,11 @@ def _load_credentials():
     key_json = settings.GOOGLE_SPEECH_CREDENTIALS_JSON
     try:
         if key_file:
+            path = Path(key_file)
+            if not path.is_absolute():
+                path = settings.BASE_DIR / path
             return service_account.Credentials.from_service_account_file(
-                key_file, scopes=[_CLOUD_PLATFORM_SCOPE]
+                path, scopes=[_CLOUD_PLATFORM_SCOPE]
             )
         if key_json:
             return service_account.Credentials.from_service_account_info(
