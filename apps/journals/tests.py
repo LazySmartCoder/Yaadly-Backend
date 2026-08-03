@@ -132,6 +132,7 @@ class TranscribeServiceTests(TestCase):
         return response
 
     @override_settings(
+        GOOGLE_SPEECH_CREDENTIALS_FILE="",
         GOOGLE_SPEECH_CREDENTIALS_JSON=json.dumps(
             {
                 "type": "service_account",
@@ -168,6 +169,7 @@ class TranscribeServiceTests(TestCase):
         )
 
     @override_settings(
+        GOOGLE_SPEECH_CREDENTIALS_FILE="",
         GOOGLE_SPEECH_CREDENTIALS_JSON="{}",
         STT_LANGUAGE_CODE="en-US",
     )

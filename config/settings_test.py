@@ -17,3 +17,9 @@ DATABASES = {
         "NAME": Path(__file__).resolve().parent.parent / "test_db.sqlite3",
     }
 }
+
+# The production .env sets DEBUG=False which enables SECURE_SSL_REDIRECT and
+# bounces plain-HTTP test-client requests with 301s. Force those off so the
+# DRF API tests run over the test client's HTTP transport.
+DEBUG = True
+SECURE_SSL_REDIRECT = False

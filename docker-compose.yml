@@ -22,17 +22,14 @@ services:
     environment:
       - POSTGRES_HOST=db
       - USE_SQLITE=false
+      - GOOGLE_SPEECH_CREDENTIALS_FILE=/secrets/unilink-c7ae1-91d46e962955.json
     ports:
       - "8000:8000"
     depends_on:
       db:
         condition: service_healthy
     volumes:
-      # Mount the Google service-account key so the backend can transcribe voice
-      # entries. Create the file on the host and reference it via
-      # GOOGLE_SPEECH_CREDENTIALS_FILE in .env:
-      #   GOOGLE_SPEECH_CREDENTIALS_FILE=/secrets/gcp-stt-service-account.json
-      # - ./secrets/gcp-stt-service-account.json:/secrets/gcp-stt-service-account.json:ro
+      - ./secrets:/secrets:ro
 
 volumes:
   pgdata:
