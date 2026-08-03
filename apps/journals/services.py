@@ -103,6 +103,7 @@ def _load_credentials():
             path = Path(key_file)
             if not path.is_absolute():
                 path = settings.BASE_DIR / path
+            logger.info("Loading Google Speech credentials from %s", path)
             return service_account.Credentials.from_service_account_file(
                 path, scopes=[_CLOUD_PLATFORM_SCOPE]
             )
@@ -111,7 +112,12 @@ def _load_credentials():
                 json.loads(key_json), scopes=[_CLOUD_PLATFORM_SCOPE]
             )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
-        logger.error("Could not load Google Speech credentials: %s", exc)
+        logger.error(
+            "Could not load Google Speech credentials from %r (exists=%s): %s",
+            path if "path" in dir() else key_file,
+            Path(path).exists() if "path" in dir() else None,
+            exc,
+        )
         raise TranscriptionUnavailable(
             "Speech-to-text is not configured correctly on the server."
         ) from exc

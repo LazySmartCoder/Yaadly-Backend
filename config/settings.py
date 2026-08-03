@@ -6,9 +6,13 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR / "apps"))
 
-ENV_PATH = Path("/root/yaadly/.env")
+# Prefer the deployment .env next to the code (BASE_DIR/.env); fall back to a
+# fixed production path (/root/yaadly/.env) for server layouts where the
+# secrets live outside the app directory.
+_ENV_CANDIDATES = [Path("/root/yaadly/.env"), BASE_DIR / ".env"]
+ENV_PATH = next((p for p in _ENV_CANDIDATES if p.exists()), None)
 
-if ENV_PATH.exists():
+if ENV_PATH is not None:
     from dotenv import load_dotenv
 
     load_dotenv(ENV_PATH)
