@@ -48,6 +48,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "config.middleware.LanAwareSSLRedirectMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -143,22 +144,6 @@ GOOGLE_CLIENT_ID = env(
     "203246620684-ehhhpgjtd4lbo7537nruu53a7vb271q6.apps.googleusercontent.com",
 )
 
-# Google Cloud Speech-to-Text. Provide EITHER a path to a service-account JSON
-# key file (GOOGLE_SPEECH_CREDENTIALS_FILE) or the key's contents inline
-# (GOOGLE_SPEECH_CREDENTIALS_JSON) for a service account with the
-# "Cloud Speech-to-Text API" enabled. Voice entries are transcribed through the
-# Speech-to-Text v1 API on the server.
-GOOGLE_SPEECH_CREDENTIALS_FILE = env("GOOGLE_SPEECH_CREDENTIALS_FILE", "")
-GOOGLE_SPEECH_CREDENTIALS_JSON = env("GOOGLE_SPEECH_CREDENTIALS_JSON", "")
-
-# BCP-47 language code for transcription (see Speech-to-Text supported
-# languages). The app records 16 kHz mono PCM, so the client must match this.
-STT_LANGUAGE_CODE = env("STT_LANGUAGE_CODE", "en-US")
-
-# Upper bound on a single uploaded voice clip (bytes). Keeps the synchronous
-# Speech-to-Text `recognize` call within its ~60s / ~10MB request limits.
-STT_MAX_AUDIO_BYTES = env("STT_MAX_AUDIO_BYTES", 12 * 1024 * 1024, int)
-
 CORS_ALLOWED_ORIGINS = env(
     "CORS_ALLOWED_ORIGINS",
     "http://localhost:3000,http://localhost:8080,http://localhost:5000",
@@ -169,7 +154,10 @@ CORS_ALLOW_CREDENTIALS = True
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 if not DEBUG:
-    SECURE_SSL_REDIRECT = True
+    # Local dev against a plain-HTTP Django backend (e.g. a real Android device
+    # hitting runserver over the LAN) must opt out of the HTTPS redirect; the
+    # production default stays on.
+    SECURE_SSL_REDIRECT = env("SECURE_SSL_REDIRECT", True, bool)
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
     SECURE_HSTS_SECONDS = 31536000
