@@ -6,10 +6,12 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR / "apps"))
 
-if os.path.exists(BASE_DIR / ".env"):
+ENV_PATH = Path("/root/yaadly/.env")
+
+if ENV_PATH.exists():
     from dotenv import load_dotenv
 
-    load_dotenv(BASE_DIR / ".env")
+    load_dotenv(ENV_PATH)
 
 
 def env(key, default=None, cast=str):
