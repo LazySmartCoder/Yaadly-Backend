@@ -2,6 +2,10 @@ from django.contrib import admin
 
 from .models import UserProfile
 
+admin.site.site_header = "Yaadly Administration"
+admin.site.site_title = "Yaadly"
+admin.site.index_title = "Welcome to Yaadly Admin Panel"
+
 
 @admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):
