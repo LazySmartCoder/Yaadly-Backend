@@ -22,14 +22,14 @@ services:
     environment:
       - POSTGRES_HOST=db
       - USE_SQLITE=false
-      - GOOGLE_SPEECH_CREDENTIALS_FILE=unilink-c7ae1-91d46e962955.json
+      - GOOGLE_SPEECH_CREDENTIALS_FILE=unilink-c7ae1-917a48720780.json
     ports:
       - "8000:8000"
     depends_on:
       db:
         condition: service_healthy
     volumes:
-      - ./unilink-c7ae1-91d46e962955.json:/app/unilink-c7ae1-91d46e962955.json:ro
+      - ./unilink-c7ae1-917a48720780.json:/app/unilink-c7ae1-917a48720780.json:ro
 
 volumes:
   pgdata:
