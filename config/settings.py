@@ -33,6 +33,13 @@ SECRET_KEY = env("SECRET_KEY", "dev-insecure-change-me")
 DEBUG = env("DEBUG", True, bool)
 ALLOWED_HOSTS = env("ALLOWED_HOSTS", "*", list)
 
+# Always accept the local dev machine's LAN IPs (physical device -> runserver),
+# even if a stale ALLOWED_HOSTS is already exported in the server process env.
+_DEV_LAN_HOSTS = ["192.168.43.159", "192.168.4.42", "localhost", "127.0.0.1"]
+for _host in _DEV_LAN_HOSTS:
+    if _host not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append(_host)
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -114,7 +121,57 @@ USE_TZ = True
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STATIC_ROOT.mkdir(exist_ok=True)
-STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+
+MEDIA_URL = "media/"
+MEDIA_ROOT = BASE_DIR / "media"
+
+STORAGES = {
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+        "OPTIONS": {"location": str(MEDIA_ROOT)},
+    },
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+    },
+}
+
+# DigitalOcean Spaces (S3-compatible object storage) for uploaded media.
+# Enable with USE_S3_STORAGE=True; anything uploaded via a FileField (e.g.
+# voice-entry audio) is persisted to the bucket instead of the local disk.
+USE_S3_STORAGE = env("USE_S3_STORAGE", False, bool)
+if USE_S3_STORAGE:
+    STORAGES["default"] = {
+        "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
+        "OPTIONS": {
+            "access_key": env("AWS_ACCESS_KEY_ID", ""),
+            "secret_key": env("AWS_SECRET_ACCESS_KEY", ""),
+            "bucket_name": env("AWS_STORAGE_BUCKET_NAME", "yaadlybucket"),
+            "endpoint_url": env(
+                "AWS_S3_ENDPOINT_URL",
+                "https://sfo3.digitaloceanspaces.com",
+            ),
+            "region_name": env("AWS_S3_REGION_NAME", "sfo3"),
+            "querystring_auth": True,
+            "querystring_expire": 7 * 24 * 3600,
+            "file_overwrite": True,
+        },
+    }
+
+# Shared values used by the photo pre-signing helper (serializers).
+AWS_STORAGE_BUCKET_NAME = env("AWS_STORAGE_BUCKET_NAME", "yaadlybucket")
+AWS_S3_ENDPOINT_URL = env("AWS_S3_ENDPOINT_URL", "https://sfo3.digitaloceanspaces.com")
+AWS_S3_REGION_NAME = env("AWS_S3_REGION_NAME", "sfo3")
+# Separate, read-only credentials used only to mint pre-signed URLs for viewing
+# photos. Uploads keep using the main AWS_* credentials above.
+AWS_SIGNING_ACCESS_KEY_ID = env("AWS_SIGNING_ACCESS_KEY_ID", "")
+AWS_SIGNING_SECRET_ACCESS_KEY = env("AWS_SIGNING_SECRET_ACCESS_KEY", "")
+AWS_SIGNED_URL_EXPIRE = env("AWS_SIGNED_URL_EXPIRE", 7 * 24 * 3600, int)
+
+# Allow large photo uploads. Django's defaults are 2.5 MB, which modern phone
+# photos routinely exceed and would otherwise be rejected before reaching the
+# view.
+DATA_UPLOAD_MAX_MEMORY_SIZE = env("DATA_UPLOAD_MAX_MEMORY_SIZE", 100 * 1024 * 1024, int)
+FILE_UPLOAD_MAX_MEMORY_SIZE = env("FILE_UPLOAD_MAX_MEMORY_SIZE", 100 * 1024 * 1024, int)
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
@@ -143,6 +200,9 @@ GOOGLE_CLIENT_ID = env(
     "GOOGLE_CLIENT_ID",
     "203246620684-ehhhpgjtd4lbo7537nruu53a7vb271q6.apps.googleusercontent.com",
 )
+
+GEMINI_API_KEY = env("GEMINI_API_KEY", None)
+GEMINI_MODEL = env("GEMINI_MODEL", "gemini-2.5-flash-lite")
 
 CORS_ALLOWED_ORIGINS = env(
     "CORS_ALLOWED_ORIGINS",

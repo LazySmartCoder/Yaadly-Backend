@@ -8,3 +8,6 @@ psycopg2-binary==2.9.11
 python-dotenv==1.1.1
 google-auth==2.40.1
 requests==2.32.5
+faster-whisper==1.2.1
+django-storages[s3]==1.14.6
+boto3==1.43.65

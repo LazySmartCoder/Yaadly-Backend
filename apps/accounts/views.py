@@ -193,6 +193,15 @@ class GoogleProfileView(APIView):
         return Response({"user": UserSerializer(user).data})
 
 
+class MeView(APIView):
+    """Return the authenticated user's current profile data."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response({"user": UserSerializer(request.user).data})
+
+
 class DeleteAccountView(APIView):
     """Permanently delete the authenticated user's account.
 

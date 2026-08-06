@@ -7,10 +7,12 @@ from .models import UserProfile
 class UserSerializer(serializers.ModelSerializer):
     name = serializers.SerializerMethodField()
     avatar_url = serializers.SerializerMethodField()
+    bio = serializers.SerializerMethodField()
     phone_number = serializers.SerializerMethodField()
     birthday = serializers.SerializerMethodField()
     gender = serializers.SerializerMethodField()
     addresses = serializers.SerializerMethodField()
+    day_streak = serializers.SerializerMethodField()
 
     class Meta:
         model = get_user_model()
@@ -19,10 +21,12 @@ class UserSerializer(serializers.ModelSerializer):
             "email",
             "name",
             "avatar_url",
+            "bio",
             "phone_number",
             "birthday",
             "gender",
             "addresses",
+            "day_streak",
         ]
 
     def _profile(self, obj):
@@ -35,6 +39,10 @@ class UserSerializer(serializers.ModelSerializer):
     def get_avatar_url(self, obj):
         profile = self._profile(obj)
         return profile.avatar_url if profile and profile.avatar_url else ""
+
+    def get_bio(self, obj):
+        profile = self._profile(obj)
+        return profile.bio if profile and profile.bio else ""
 
     def get_phone_number(self, obj):
         profile = self._profile(obj)
@@ -51,6 +59,12 @@ class UserSerializer(serializers.ModelSerializer):
     def get_addresses(self, obj):
         profile = self._profile(obj)
         return profile.addresses if profile and profile.addresses else []
+
+    def get_day_streak(self, obj):
+        profile = self._profile(obj)
+        if not profile:
+            return 0
+        return profile.recompute_day_streak()
 
 
 class GoogleAuthSerializer(serializers.Serializer):
