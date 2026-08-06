@@ -143,8 +143,14 @@ if USE_S3_STORAGE:
     STORAGES["default"] = {
         "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
         "OPTIONS": {
-            "access_key": env("AWS_ACCESS_KEY_ID", ""),
-            "secret_key": env("AWS_SECRET_ACCESS_KEY", ""),
+            "access_key": env(
+                "AWS_ACCESS_KEY_ID",
+                "DO801ZPVFNVJBVUMYJGU",
+            ),
+            "secret_key": env(
+                "AWS_SECRET_ACCESS_KEY",
+                "yGasmF+HqvQv+iMn6rOuv5/UNNRLbI3qRE0B/SwB0HE",
+            ),
             "bucket_name": env("AWS_STORAGE_BUCKET_NAME", "yaadlybucket"),
             "endpoint_url": env(
                 "AWS_S3_ENDPOINT_URL",
@@ -163,8 +169,14 @@ AWS_S3_ENDPOINT_URL = env("AWS_S3_ENDPOINT_URL", "https://sfo3.digitaloceanspace
 AWS_S3_REGION_NAME = env("AWS_S3_REGION_NAME", "sfo3")
 # Separate, read-only credentials used only to mint pre-signed URLs for viewing
 # photos. Uploads keep using the main AWS_* credentials above.
-AWS_SIGNING_ACCESS_KEY_ID = env("AWS_SIGNING_ACCESS_KEY_ID", "")
-AWS_SIGNING_SECRET_ACCESS_KEY = env("AWS_SIGNING_SECRET_ACCESS_KEY", "")
+AWS_SIGNING_ACCESS_KEY_ID = env(
+    "AWS_SIGNING_ACCESS_KEY_ID",
+    "DO801ZPVFNVJBVUMYJGU",
+)
+AWS_SIGNING_SECRET_ACCESS_KEY = env(
+    "AWS_SIGNING_SECRET_ACCESS_KEY",
+    "yGasmF+HqvQv+iMn6rOuv5/UNNRLbI3qRE0B/SwB0HE",
+)
 AWS_SIGNED_URL_EXPIRE = env("AWS_SIGNED_URL_EXPIRE", 7 * 24 * 3600, int)
 
 # Allow large photo uploads. Django's defaults are 2.5 MB, which modern phone
@@ -201,7 +213,10 @@ GOOGLE_CLIENT_ID = env(
     "203246620684-ehhhpgjtd4lbo7537nruu53a7vb271q6.apps.googleusercontent.com",
 )
 
-GEMINI_API_KEY = env("GEMINI_API_KEY", None)
+GEMINI_API_KEY = env(
+    "GEMINI_API_KEY",
+    "AIzaSyD2swt581FIxAMaO7fEgJ5hod0-AyIFHMU",
+)
 GEMINI_MODEL = env("GEMINI_MODEL", "gemini-2.5-flash-lite")
 
 CORS_ALLOWED_ORIGINS = env(
