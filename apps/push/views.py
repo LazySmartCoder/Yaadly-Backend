@@ -1,5 +1,6 @@
 import logging
 
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -48,5 +49,28 @@ class RegisterDeviceTokenView(APIView):
 
         return Response(
             {"detail": "Device token registered."},
+            status=status.HTTP_200_OK,
+        )
+
+
+class DeactivateDeviceTokenView(APIView):
+    """Deactivate the user's device token(s), e.g. on logout.
+
+    With a ``token`` in the body only that token is deactivated (if the user
+    owns it); without one, every token of the current user is deactivated. This
+    stops the daily pushes for logged-out users without deleting history.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        token_value = (request.data.get("token") or "").strip()
+        qs = DeviceToken.objects.filter(user=request.user, is_active=True)
+        if token_value:
+            qs = qs.filter(token=token_value)
+        count = qs.update(is_active=False, updated_at=timezone.now())
+        logger.info("Deactivated %s device token(s) for user %s", count, request.user.id)
+        return Response(
+            {"detail": f"{count} device token(s) deactivated."},
             status=status.HTTP_200_OK,
         )

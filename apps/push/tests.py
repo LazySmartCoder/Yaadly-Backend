@@ -97,6 +97,105 @@ class ServicesTests(TestCase):
             with self.assertRaises(FcmError):
                 send_message("tok", "title", "body")
 
+    def _configured_send(self):
+        creds = mock.Mock(valid=True, token="access-token", project_id="p1")
+        patches = [
+            mock.patch("apps.push.services._load_credentials", return_value=creds),
+            mock.patch("apps.push.services._access_token", return_value="access-token"),
+            mock.patch("apps.push.services.project_id", return_value="p1"),
+        ]
+        for p in patches:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in patches])
+
+    def test_payload_uses_high_priority_channel(self):
+        from .services import send_message
+
+        self._configured_send()
+        with mock.patch("apps.push.services.requests.post") as post:
+            post.return_value = mock.Mock(status_code=200, content=b"{}", text="{}")
+            send_message("tok-1", "title", "body")
+        payload = post.call_args.kwargs["json"]["message"]
+        self.assertEqual(payload["android"]["priority"], "HIGH")
+        self.assertEqual(
+            payload["android"]["notification"]["channel_id"], "yaadly_messages"
+        )
+
+    def test_transient_failure_is_retried_then_succeeds(self):
+        from .services import send_message
+
+        self._configured_send()
+        fail = mock.Mock(status_code=503, content=b"", text="unavailable")
+        ok = mock.Mock(status_code=200, content=b"{}", text="{}")
+        with mock.patch("apps.push.services.requests.post", side_effect=[fail, ok]) as post:
+            send_message("tok-1", "title", "body")
+        self.assertEqual(post.call_count, 2)
+
+    def test_transient_failure_then_unregistered_raises_device_not_registered(self):
+        from .services import send_message
+
+        self._configured_send()
+        fail = mock.Mock(status_code=503, content=b"", text="unavailable")
+        unregistered = mock.Mock(
+            status_code=400, content=b"", text='{"error": {"status": "UNREGISTERED"}}'
+        )
+        with mock.patch(
+            "apps.push.services.requests.post",
+            side_effect=[fail, unregistered],
+        ) as post:
+            with self.assertRaises(DeviceNotRegistered):
+                send_message("tok-1", "title", "body")
+        self.assertEqual(post.call_count, 2)
+
+    def test_exhausted_retries_raise_fcm_error(self):
+        from .services import send_message
+
+        self._configured_send()
+        fail = mock.Mock(status_code=503, content=b"", text="unavailable")
+        with mock.patch("apps.push.services.requests.post", return_value=fail) as post:
+            with self.assertRaises(FcmError):
+                send_message("tok-1", "title", "body")
+        self.assertEqual(post.call_count, 3)
+
+
+class DeactivateDeviceTokenTests(TestCase):
+    def setUp(self):
+        self.client = APIClient(HTTP_HOST="localhost")
+        self.url = reverse("deactivate_device_token")
+        self.user = User.objects.create_user(username="a@example.com", email="a@example.com")
+        self.other = User.objects.create_user(username="b@example.com", email="b@example.com")
+
+    def test_requires_authentication(self):
+        response = self.client.post(self.url, {}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_deactivates_all_own_tokens(self):
+        DeviceToken.objects.create(user=self.user, token="tok-1")
+        DeviceToken.objects.create(user=self.user, token="tok-2")
+        DeviceToken.objects.create(user=self.other, token="tok-other")
+        self.client.force_authenticate(self.user)
+        response = self.client.post(self.url, {}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(DeviceToken.objects.get(token="tok-1").is_active)
+        self.assertFalse(DeviceToken.objects.get(token="tok-2").is_active)
+        self.assertTrue(DeviceToken.objects.get(token="tok-other").is_active)
+
+    def test_deactivates_only_requested_token(self):
+        DeviceToken.objects.create(user=self.user, token="tok-1")
+        DeviceToken.objects.create(user=self.user, token="tok-2")
+        self.client.force_authenticate(self.user)
+        response = self.client.post(self.url, {"token": "tok-1"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(DeviceToken.objects.get(token="tok-1").is_active)
+        self.assertTrue(DeviceToken.objects.get(token="tok-2").is_active)
+
+    def test_cannot_deactivate_another_users_token(self):
+        DeviceToken.objects.create(user=self.other, token="tok-other")
+        self.client.force_authenticate(self.user)
+        response = self.client.post(self.url, {"token": "tok-other"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(DeviceToken.objects.get(token="tok-other").is_active)
+
 
 class SendDailyNotificationsCommandTests(TestCase):
     def setUp(self):

@@ -22,6 +22,9 @@ services:
     environment:
       - POSTGRES_HOST=db
       - USE_SQLITE=false
+      - FCM_SERVICE_ACCOUNT_PATH=/app/firebase-service-account.json
+    volumes:
+      - /root/yaadly/firebase-service-account.json:/app/firebase-service-account.json:ro
     ports:
       - "8000:8000"
     depends_on:
@@ -36,6 +39,9 @@ services:
     environment:
       - POSTGRES_HOST=db
       - USE_SQLITE=false
+      - FCM_SERVICE_ACCOUNT_PATH=/app/firebase-service-account.json
+    volumes:
+      - /root/yaadly/firebase-service-account.json:/app/firebase-service-account.json:ro
     depends_on:
       db:
         condition: service_healthy

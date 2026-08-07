@@ -148,12 +148,20 @@ class Command(BaseCommand):
                 "and FCM_PROJECT_ID). Nothing was sent."
             )
 
+        self.stats = {"deactivated": 0, "failed": 0, "no_copy": 0}
         today = timezone.localdate()
         try:
             self._send_slot(slot, today, options)
         except FcmNotConfigured as exc:
             # Credentials disappeared mid-run; stop with a clear message.
             raise CommandError(f"FCM became unavailable mid-run: {exc}")
+        finally:
+            self.stdout.write(
+                f"[{slot}] run finished: "
+                f"{self.stats['deactivated']} token(s) deactivated, "
+                f"{self.stats['failed']} device(s) failed, "
+                f"{self.stats['no_copy']} user(s) skipped (no copy)"
+            )
 
     def _send_slot(self, slot, today, options):
         dry_run = options["dry_run"]
@@ -211,6 +219,7 @@ class Command(BaseCommand):
             logger.exception("Push copy generation failed for user %s", user.id)
             copy = None
         if not copy:
+            self.stats["no_copy"] += 1
             return False
 
         if dry_run:
@@ -229,10 +238,12 @@ class Command(BaseCommand):
             except DeviceNotRegistered:
                 token.is_active = False
                 token.save(update_fields=["is_active", "updated_at"])
+                self.stats["deactivated"] += 1
                 logger.info("Deactivated unregistered device token for user %s", user.id)
             except FcmNotConfigured:
                 raise
             except FcmError as exc:
+                self.stats["failed"] += 1
                 logger.warning("Push failed for user %s device %s: %s", user.id, token.id, exc)
 
         if delivered == 0:

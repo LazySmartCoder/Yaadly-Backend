@@ -232,7 +232,15 @@ FCM_SERVICE_ACCOUNT_JSON = env("FCM_SERVICE_ACCOUNT_JSON", "")
 FCM_PROJECT_ID = env("FCM_PROJECT_ID", "")
 FCM_BATCH_SIZE = env("FCM_BATCH_SIZE", 200, int)
 
+# The Android notification channel used for FCM messages while the app is in
+# the background/terminated. Must match the channel created by the app
+# (flutter_local_notifications), otherwise notifications fall back to FCM's
+# default-importance channel and may arrive without sound.
+FCM_CHANNEL_ID = env("FCM_CHANNEL_ID", "yaadly_messages")
+
 # Daily slot times, in the server's TIME_ZONE (local). "HH:MM".
+# TIME_ZONE should be the audience's local timezone (e.g. Asia/Kolkata); every
+# user shares it, so this is "9 AM/1 PM/10 PM IST" for a single-region app.
 FCM_MORNING_AT = env("FCM_MORNING_AT", "09:00")
 FCM_AFTERNOON_AT = env("FCM_AFTERNOON_AT", "13:00")
 FCM_EVENING_AT = env("FCM_EVENING_AT", "22:00")

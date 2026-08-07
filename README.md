@@ -34,6 +34,7 @@ python manage.py runserver
 | PUT/PATCH | `/api/entries/{id}/`  | Update an entry          |
 | DELETE | `/api/entries/{id}/`    | Delete an entry          |
 | POST   | `/api/push/token/`      | Register the device's FCM token |
+| POST   | `/api/push/token/deactivate/` | Deactivate the device's FCM token (on logout) |
 | GET    | `/api/health/`          | Health check             |
 
 Send JWT as `Authorization: Bearer <token>`. Entries are owner-scoped; search with `?search=...` and paginate with `?page=1`.
@@ -42,13 +43,24 @@ Send JWT as `Authorization: Bearer <token>`. Entries are owner-scoped; search wi
 
 Three FCM pushes go out to every user each day, in batches, from the backend.
 All copy is generated per user with Gemini **gemini-2.5-flash-lite** and every
-body is exactly two lines.
+body is exactly two lines. Times below are in the server's `TIME_ZONE` — set it
+to the audience's local timezone (e.g. `Asia/Kolkata` for IST).
 
-| Time (server `TIME_ZONE`) | Slot        | Message |
-|---------------------------|-------------|---------|
-| 09:00                     | `morning`   | "Everyone believes in you", echoed from a moment in the user's past journal entries |
-| 13:00                     | `afternoon` | A simple random memory drawn from an entry in the last 10 days |
-| 22:00                     | `evening`   | Invitation to jot down the day, plus a good thing from their past entries |
+| Time (`TIME_ZONE`) | Slot        | Message |
+|--------------------|-------------|---------|
+| 09:00              | `morning`   | "Everyone believes in you", echoed from a moment in the user's past journal entries |
+| 13:00              | `afternoon` | A simple random memory drawn from an entry in the last 10 days |
+| 22:00              | `evening`   | Invitation to jot down the day, plus a good thing from their past entries |
+
+Sends are best-effort with fault tolerance built in:
+
+- Transient FCM failures (HTTP 429/5xx) are retried with exponential backoff.
+- Unregistered/revoked tokens are auto-deactivated so they are never retried.
+- `PushLog` dedupes per user/slot/day, so re-runs can never duplicate a push.
+- Background/terminated Android notifications land on the high-importance
+  `yaadly_messages` channel (`FCM_CHANNEL_ID`), matching the channel the app
+  creates, so they arrive with sound.
+- A failing run is reported in the run summary, and the scheduler keeps going.
 
 ### Setup
 
@@ -56,7 +68,10 @@ body is exactly two lines.
    `/root/yaadly/firebase-service-account.json`) and set it in `.env` via
    `FCM_SERVICE_ACCOUNT_PATH` (or paste the JSON into
    `FCM_SERVICE_ACCOUNT_JSON`), plus `FCM_PROJECT_ID`.
-2. Make sure `TIME_ZONE` is set to the timezone you want the slots to fire in.
+   Under `docker compose` the file is mounted into the containers automatically
+   (`docker-compose.yml`), so the host path in `.env` stays correct.
+2. Make sure `TIME_ZONE` is set to the timezone you want the slots to fire in
+   (`Asia/Kolkata` for Indian users).
 3. Run the scheduler (Docker) or the cron jobs (below).
 
 ### Sending

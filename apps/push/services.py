@@ -10,6 +10,8 @@ raises into the caller unless the caller asked for it via [FcmSendError].
 import json
 import logging
 import os
+import random
+import time
 
 import requests
 from django.conf import settings
@@ -21,6 +23,12 @@ logger = logging.getLogger(__name__)
 FCM_SCOPE = "https://www.googleapis.com/auth/firebase.messaging"
 FCM_API_URL = "https://fcm.googleapis.com/v1/projects/{project}/messages:send"
 FCM_TIMEOUT = 10
+
+# HTTP statuses FCM returns for transient conditions worth retrying (throttling
+# or an upstream hiccup). Everything else is terminal.
+RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
+MAX_ATTEMPTS = 3
+BACKOFF_BASE_SECONDS = 1.0
 
 
 class FcmError(Exception):
@@ -85,16 +93,32 @@ def _access_token():
     creds = _load_credentials()
     if creds is None:
         raise FcmNotConfigured("FCM service-account credentials are not configured.")
-    if not creds.valid:
-        creds.refresh(GoogleAuthRequest())
-    return creds.token
+    try:
+        if not creds.valid:
+            creds.refresh(GoogleAuthRequest())
+        return creds.token
+    except Exception as exc:  # noqa: BLE001 - surface any OAuth failure uniformly
+        logger.warning("FCM access-token refresh failed: %s", exc)
+        raise FcmError(f"Could not obtain an FCM access token: {exc}") from exc
+
+
+def _channel_id():
+    """The Android channel FCM notifications are delivered on."""
+    return getattr(settings, "FCM_CHANNEL_ID", "") or "yaadly_messages"
+
+
+def _sleep_backoff(attempt):
+    """Exponential backoff between retries, plus a little jitter."""
+    delay = BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
+    time.sleep(delay)
 
 
 def send_message(token, title, body, data=None):
     """Send a single notification message to one device token.
 
     ``data`` (optional dict) is forwarded verbatim to the app as FCM data
-    payload. Raises [DeviceNotRegistered] when FCM no longer recognizes the
+    payload. Transient FCM failures (HTTP 429/5xx) are retried with exponential
+    backoff; raises [DeviceNotRegistered] when FCM no longer recognizes the
     token, and [FcmError] (or [FcmNotConfigured]) for other failures.
     """
     token = (token or "").strip()
@@ -115,43 +139,64 @@ def send_message(token, title, body, data=None):
             "token": token,
             "notification": {"title": title, "body": body},
             "data": {str(k): str(v) for k, v in (data or {}).items()},
-            "android": {"priority": "HIGH"},
+            "android": {
+                "priority": "HIGH",
+                "notification": {"channel_id": _channel_id()},
+            },
         }
     }
 
-    try:
-        response = requests.post(
-            FCM_API_URL.format(project=project),
-            headers={
-                "Content-Type": "application/json; UTF-8",
-                "Authorization": f"Bearer {access}",
-            },
-            json=payload,
-            timeout=FCM_TIMEOUT,
-        )
-    except requests.RequestException as exc:
-        logger.warning("FCM send request failed: %s", exc)
-        raise FcmError(str(exc)) from exc
+    last_error = None
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            response = requests.post(
+                FCM_API_URL.format(project=project),
+                headers={
+                    "Content-Type": "application/json; UTF-8",
+                    "Authorization": f"Bearer {access}",
+                },
+                json=payload,
+                timeout=FCM_TIMEOUT,
+            )
+        except requests.RequestException as exc:
+            logger.warning("FCM send request failed (attempt %s): %s", attempt, exc)
+            last_error = FcmError(str(exc))
+            if attempt < MAX_ATTEMPTS:
+                _sleep_backoff(attempt)
+                continue
+            raise last_error from exc
 
-    if response.status_code == 404:
-        logger.info("FCM reports device token unregistered: %s...", token[:24])
-        raise DeviceNotRegistered(response.text)
-    if response.status_code >= 400:
-        # Tokens that are invalid/expired arrive as 400 UNREGISTERED too.
-        text = response.text
-        if '"UNREGISTERED"' in text or '"INVALID_ARGUMENT"' in text:
-            logger.info("FCM rejected unregistered/invalid token: %s...", token[:24])
-            raise DeviceNotRegistered(text)
-        logger.warning(
-            "FCM send failed (HTTP %s): %s",
+        if response.status_code in RETRYABLE_STATUSES and attempt < MAX_ATTEMPTS:
+            logger.warning(
+                "FCM transient failure (HTTP %s) on attempt %s; retrying",
+                response.status_code,
+                attempt,
+            )
+            _sleep_backoff(attempt)
+            continue
+
+        if response.status_code == 404:
+            logger.info("FCM reports device token unregistered: %s...", token[:24])
+            raise DeviceNotRegistered(response.text)
+        if response.status_code >= 400:
+            # Tokens that are invalid/expired arrive as 400 UNREGISTERED too.
+            text = response.text
+            if '"UNREGISTERED"' in text or '"INVALID_ARGUMENT"' in text:
+                logger.info("FCM rejected unregistered/invalid token: %s...", token[:24])
+                raise DeviceNotRegistered(text)
+            logger.warning(
+                "FCM send failed (HTTP %s): %s",
+                response.status_code,
+                text[:300],
+            )
+            raise FcmError(text)
+
+        logger.info(
+            "FCM message sent to %s... (HTTP %s)",
+            token[:24],
             response.status_code,
-            text[:300],
         )
-        raise FcmError(text)
+        return response.json() if response.content else {}
 
-    logger.info(
-        "FCM message sent to %s... (HTTP %s)",
-        token[:24],
-        response.status_code,
-    )
-    return response.json() if response.content else {}
+    # Only reachable if every retry exhausted with a retryable status.
+    raise last_error or FcmError("FCM send failed after retries.")
