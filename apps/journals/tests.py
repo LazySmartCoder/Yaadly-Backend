@@ -347,7 +347,21 @@ class StatsTests(TestCase):
         response = self._get(reverse("stats"))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["entries_this_month"], 1)
-        self.assertEqual(response.data["total_entries"], 2)
+
+    def test_stats_counts_total_photos(self):
+        self._post(
+            reverse("entry-list"),
+            {"date": date.today().isoformat(), "content": "with photos"},
+            format="json",
+        )
+        entry = JournalEntry.objects.get(user=self.user)
+        Gallery.objects.create(user=self.user, entry=entry, url="https://bucket.example.com/a.jpg")
+        Gallery.objects.create(user=self.user, entry=entry, url="https://bucket.example.com/b.jpg")
+
+        response = self._get(reverse("stats"))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["total_photos"], 2)
+        self.assertEqual(response.data["total_entries"], 1)
 
 
 class ChatTests(TestCase):

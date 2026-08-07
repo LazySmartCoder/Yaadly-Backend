@@ -6,6 +6,7 @@ import logging
 from django.conf import settings
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import mixins, status, viewsets
@@ -267,6 +268,9 @@ class StatsView(APIView):
                 "entries_this_month": entries.filter(
                     created_at__year=now.year,
                     created_at__month=now.month,
+                ).count(),
+                "total_photos": Gallery.objects.filter(
+                    Q(user=request.user) | Q(entry__user=request.user)
                 ).count(),
             }
         )
