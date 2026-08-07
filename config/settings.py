@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     "corsheaders",
     "apps.accounts",
     "apps.journals",
+    "apps.push",
 ]
 
 MIDDLEWARE = [
@@ -218,6 +219,23 @@ GEMINI_API_KEY = env(
     "AIzaSyD2swt581FIxAMaO7fEgJ5hod0-AyIFHMU",
 )
 GEMINI_MODEL = env("GEMINI_MODEL", "gemini-2.5-flash-lite")
+
+# Firebase Cloud Messaging (automated daily push notifications).
+# Credentials: either a path to the Firebase service-account JSON file, or the
+# raw JSON itself via FCM_SERVICE_ACCOUNT_JSON. FCM_PROJECT_ID can be omitted
+# when the service account carries a project_id (it usually does).
+FCM_SERVICE_ACCOUNT_PATH = env(
+    "FCM_SERVICE_ACCOUNT_PATH",
+    "/root/yaadly/firebase-service-account.json",
+)
+FCM_SERVICE_ACCOUNT_JSON = env("FCM_SERVICE_ACCOUNT_JSON", "")
+FCM_PROJECT_ID = env("FCM_PROJECT_ID", "")
+FCM_BATCH_SIZE = env("FCM_BATCH_SIZE", 200, int)
+
+# Daily slot times, in the server's TIME_ZONE (local). "HH:MM".
+FCM_MORNING_AT = env("FCM_MORNING_AT", "09:00")
+FCM_AFTERNOON_AT = env("FCM_AFTERNOON_AT", "13:00")
+FCM_EVENING_AT = env("FCM_EVENING_AT", "22:00")
 
 CORS_ALLOWED_ORIGINS = env(
     "CORS_ALLOWED_ORIGINS",

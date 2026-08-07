@@ -28,5 +28,17 @@ services:
       db:
         condition: service_healthy
 
+  scheduler:
+    build: .
+    restart: unless-stopped
+    command: python manage.py push_scheduler
+    env_file: .env
+    environment:
+      - POSTGRES_HOST=db
+      - USE_SQLITE=false
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   pgdata:
