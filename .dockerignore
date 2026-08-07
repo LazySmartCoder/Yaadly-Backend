@@ -7,3 +7,5 @@ db.sqlite3
 .git
 staticfiles
 media
+# Firebase service-account secret: mounted at runtime, never baked into the image.
+firebase-service-account.json
