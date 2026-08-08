@@ -211,7 +211,7 @@ SIMPLE_JWT = {
 
 GOOGLE_CLIENT_ID = env(
     "GOOGLE_CLIENT_ID",
-    "203246620684-cu9q2vi66vlijft0m7v8h3bs4qv04k3j.apps.googleusercontent.com",
+    "121554443587-p34frc2hfd21ph1p7guvvpth1arcqlsu.apps.googleusercontent.com",
 )
 
 GEMINI_API_KEY = env(
