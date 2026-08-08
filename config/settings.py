@@ -214,10 +214,10 @@ GOOGLE_CLIENT_ID = env(
     "121554443587-p34frc2hfd21ph1p7guvvpth1arcqlsu.apps.googleusercontent.com",
 )
 
-GEMINI_API_KEY = env(
-    "GEMINI_API_KEY",
-    "AIzaSyD2swt581FIxAMaO7fEgJ5hod0-AyIFHMU",
-)
+# Read from the environment only. Never commit a real key; the server provides
+# GEMINI_API_KEY via .env / the container environment. Unset means the Gemini
+# features degrade gracefully (see apps/journals/gemini.py, apps/push/gemini.py).
+GEMINI_API_KEY = env("GEMINI_API_KEY", "")
 GEMINI_MODEL = env("GEMINI_MODEL", "gemini-2.5-flash-lite")
 
 # Firebase Cloud Messaging (automated daily push notifications).
