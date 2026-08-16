@@ -1,0 +1,11 @@
+.venv
+venv
+__pycache__
+*.pyc
+db.sqlite3
+.env
+.git
+staticfiles
+media
+# Firebase service-account secret: mounted at runtime, never baked into the image.
+firebase-service-account.json

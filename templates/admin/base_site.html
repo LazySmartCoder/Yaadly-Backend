@@ -1,0 +1,42 @@
+{% extends "admin/base.html" %}
+{% load i18n %}
+
+{% block title %}{% if subtitle %}{{ subtitle }} | {% endif %}{{ title }} | {{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block branding %}
+<div id="site-name"><a href="{% url 'admin:index' %}">{{ site_header|default:_('Django administration') }}</a></div>
+{% if user.is_anonymous %}
+  {% include "admin/color_theme_toggle.html" %}
+{% endif %}
+{% endblock %}
+
+{% block nav-global %}{% endblock %}
+
+{% block extrastyle %}
+<style>
+  .shoot-form { display: inline-block; margin-left: 0.75rem; }
+  .shoot-button {
+    cursor: pointer;
+    border: 0;
+    border-radius: 4px;
+    padding: 4px 12px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: #ffffff;
+    background: var(--accent, #79aec8);
+  }
+  .shoot-button:hover { filter: brightness(1.1); }
+  [data-theme="dark"] .shoot-button { color: #1b1b1f; }
+</style>
+{% endblock %}
+
+{% block welcome-msg %}
+  {% translate 'Welcome,' %}
+  <strong>{% firstof user.get_short_name user.get_username %}</strong>.
+  <form action="{% url 'admin_shoot' %}" method="post" class="shoot-form">
+    {% csrf_token %}
+    <button type="submit" class="shoot-button" title="Send every user a 'Remember?' push with a photo from their journal">Shoot</button>
+  </form>
+{% endblock %}
