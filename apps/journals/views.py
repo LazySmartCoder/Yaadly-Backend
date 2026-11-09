@@ -1,3 +1,5 @@
+import re
+import threading
 import uuid
 from datetime import date as date_type
 from urllib.parse import urlparse
@@ -18,13 +20,13 @@ from rest_framework.views import APIView
 
 from apps.accounts.models import UserProfile
 
-from .gemini import (
+from .ollama import (
     ask_followup,
     build_bio,
     chat_reply,
-    describe_entry,
     journalize,
     journalize_chat,
+    journalize_chat_continuation,
     route_chat,
     summarize,
 )
@@ -33,17 +35,116 @@ from .serializers import GallerySerializer, JournalEntrySerializer
 
 logger = logging.getLogger(__name__)
 
+# Serializes finalization for a given (user, date) inside this process. Two
+# near-simultaneous calls (e.g. the app going inactive then paused) would
+# otherwise both see the session as PENDING and run the local model twice,
+# queueing two multi-minute Ollama jobs ahead of the user's next chat message.
+_finalize_locks = {}
+_finalize_locks_guard = threading.Lock()
+
+
+def _finalize_lock(user_id, day):
+    key = (user_id, day)
+    with _finalize_locks_guard:
+        lock = _finalize_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _finalize_locks[key] = lock
+        return lock
+
 
 def _one_line(raw_content):
-    """Local fallback for AID: a single collapsed line of the raw content."""
+    """A single collapsed line of the raw content."""
     line = " ".join((raw_content or "").split())
     return line[:1000]
 
 
+def _day_entry(user, day):
+    """The single journal entry that already exists for ``user``'s ``day``.
+
+    A user gets exactly one entry per calendar day; every later conversation or
+    thought on that day is merged into this entry instead of creating a new one.
+    """
+    return (
+        JournalEntry.objects.filter(user=user, date=day)
+        .order_by("created_at")
+        .first()
+    )
+
+
+# Cues that the latest user message is reaching back into the journal. We only
+# spend a routing model call when one of these matches; everyday chit-chat goes
+# straight to the reply model. This keeps ordinary conversation from being
+# misrouted into a "Are you talking about <date>?" confirmation.
+_MEMORY_CUES = re.compile(
+    r"\b(?:"
+    r"remember|recall|memor(?:y|ies)|remind me|"
+    r"that (?:day|time|night|trip|moment)|back then|"
+    r"yesterday|last night|last week|last month|last year|"
+    r"\d+\s+(?:day|week|month|year)s?\s+ago|"
+    r"when i|when we|what did i|what was i|how was my|"
+    r"my (?:journal|diary|entry|entries)|"
+    r"look(?:ing)? back|think(?:ing)? back"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Any explicit date-ish reference ("November 8", "2026-11-08", "8th", "11/08").
+_DATE_TEXT = re.compile(
+    r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}"
+    r"(?:,?\s+\d{4})?\b"
+    r"|\b\d{4}-\d{1,2}-\d{1,2}\b"
+    r"|\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b"
+    r"|\bthe\s+\d{1,2}(?:st|nd|rd|th)\b",
+    re.IGNORECASE,
+)
+
+_CONFIRMATION = re.compile(
+    r"^\s*(?:yes|yeah|yep|yup|sure|correct|right|exactly|that'?s (?:it|right)"
+    r"|no|nope|not really)\b",
+    re.IGNORECASE,
+)
+
+_DATE_QUESTION = re.compile(
+    r"(?:are you (?:talking|thinking) about|do you mean|which day|what date)",
+    re.IGNORECASE,
+)
+
+
+def _latest_user_text(messages):
+    for msg in reversed(messages):
+        if (msg.get("role") or "").lower() == "user":
+            return (msg.get("content") or "").strip()
+    return ""
+
+
+def _last_assistant_text(messages):
+    for msg in reversed(messages):
+        if (msg.get("role") or "").lower() == "assistant":
+            return (msg.get("content") or "").strip()
+    return ""
+
+
+def _looks_like_memory_query(messages):
+    """True only when the latest user turn plausibly refers to the past."""
+    text = _latest_user_text(messages)
+    if not text:
+        return False
+    if _MEMORY_CUES.search(text) or _DATE_TEXT.search(text):
+        return True
+    # A short yes/no answering our own date-confirmation is still a memory
+    # turn and must be routed so the chosen date can be resolved.
+    if _CONFIRMATION.match(text) and _DATE_QUESTION.search(
+        _last_assistant_text(messages)
+    ):
+        return True
+    return False
+
+
 def refresh_bio(user):
     """Rebuild the user's two-line bio from their latest entries and store
-    it on their profile. Best-effort: any Gemini/network failure leaves the
-    existing bio untouched."""
+    it on their profile. Best-effort: any local-model/network failure leaves
+    the existing bio untouched."""
     contents = list(
         JournalEntry.objects.filter(user=user)
         .order_by("-date", "-created_at")
@@ -81,27 +182,48 @@ class JournalEntryViewSet(
 
     def perform_create(self, serializer):
         raw = (serializer.validated_data.get("content") or "").strip()
-        enriched = journalize(raw)
-        if enriched is None:
-            # Gemini unavailable: keep the user's words and derive a title.
-            title = (serializer.validated_data.get("title") or "").strip()
-            if not title:
-                first_line = raw.splitlines()[0].strip() if raw else ""
-                title = (first_line[:255] if first_line else "Untitled entry")
-            serializer.save(
-                user=self.request.user,
-                title=title,
-                aid=describe_entry(raw) or _one_line(raw),
+        day = serializer.validated_data.get("date") or timezone.localdate()
+
+        # One entry per day: if this day already has an entry, fold the new
+        # thoughts into it instead of creating a second entry for the same day.
+        existing = _day_entry(self.request.user, day)
+        if existing is not None:
+            combined = "\n\n".join(
+                part for part in (existing.content.strip(), raw) if part
             )
+            enriched = journalize(combined)
+            if enriched is None:
+                # Local model unavailable: keep the merged words and a title.
+                title = (serializer.validated_data.get("title") or "").strip()
+                if title:
+                    existing.title = title
+                existing.content = combined
+                existing.save()
+            else:
+                existing.title = enriched["title"] or existing.title
+                existing.content = enriched["content"]
+                existing.mood = enriched["mood"] or existing.mood
+                existing.save()
+            serializer.instance = existing
         else:
-            serializer.save(
-                user=self.request.user,
-                title=enriched["title"] or "Untitled entry",
-                content=enriched["content"],
-                mood=enriched["mood"],
-                aid=describe_entry(enriched["content"], enriched["mood"])
-                or _one_line(raw),
-            )
+            enriched = journalize(raw)
+            if enriched is None:
+                # Local model unavailable: keep the user's words and derive a title.
+                title = (serializer.validated_data.get("title") or "").strip()
+                if not title:
+                    first_line = raw.splitlines()[0].strip() if raw else ""
+                    title = (first_line[:255] if first_line else "Untitled entry")
+                serializer.save(
+                    user=self.request.user,
+                    title=title,
+                )
+            else:
+                serializer.save(
+                    user=self.request.user,
+                    title=enriched["title"] or "Untitled entry",
+                    content=enriched["content"],
+                    mood=enriched["mood"],
+                )
         self._refresh_bio(self.request.user)
         self._refresh_day_streak(self.request.user)
 
@@ -279,55 +401,117 @@ class TodayDropsView(APIView):
 
 
 class ChatView(APIView):
-    """Carry on a warm conversation with the user.
+    """Continue the selected day's backend-stored conversation with the user.
 
     Everyday chat stays in the present: the AI simply talks to the user and
     mirrors their mood (happy, sad, playful, emotional, ...) without surfacing
-    journal entries. Only when the user asks to recall a memory does the
-    backend route to the journal index: general chit-chat answers straight
-    from the conversation, references to a specific day first confirm the
-    date, and confirmed days pull the full title + content before answering.
-    Routing and replies both use the cheap flash-lite model. Best-effort: any
-    failure falls back to a gentle reply.
+    journal entries. A cheap heuristic first checks whether the latest message
+    actually reaches back into the journal; only then does the backend route
+    through the journal index. General chit-chat answers straight from the
+    conversation, references to a specific day first confirm the date, and
+    confirmed days pull the full title + content before answering. Routing and
+    replies both use the local Ollama model. Best-effort: any failure falls
+    back to a gentle reply.
     """
 
     def post(self, request):
-        messages = request.data.get("messages")
+        session = None
+        raw_date = request.data.get("date")
+        latest_message = request.data.get("message")
+        if raw_date is not None or latest_message is not None:
+            if not isinstance(raw_date, str) or not isinstance(latest_message, str):
+                return Response(
+                    {"detail": "A date and message are required."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            try:
+                day = date_type.fromisoformat(raw_date.strip())
+            except ValueError:
+                return Response(
+                    {"detail": "Date must be in YYYY-MM-DD format."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            latest_message = latest_message.strip()
+            if not latest_message:
+                return Response(
+                    {"detail": "A non-empty message is required."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            session, _ = ChatSession.objects.get_or_create(
+                user=request.user,
+                date=day,
+            )
+            messages = [
+                message
+                for message in (session.messages or [])
+                if isinstance(message, dict)
+                and message.get("role") in {"user", "assistant"}
+                and isinstance(message.get("content"), str)
+                and message["content"].strip()
+            ]
+            messages.append({"role": "user", "content": latest_message})
+            session.messages = messages
+            session.save(update_fields=["messages", "updated_at"])
+        else:
+            messages = request.data.get("messages")
+
         if not isinstance(messages, list) or not messages:
             return Response(
                 {"detail": "A non-empty messages list is required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        def response_with_saved_turn(reply):
+            if session is not None:
+                session.messages = [
+                    *messages,
+                    {"role": "assistant", "content": reply},
+                ]
+                session.save(update_fields=["messages", "updated_at"])
+            return Response({"reply": reply})
+
+        latest = _latest_user_text(messages)
+        logger.info(
+            "Chat request from user %s: %d message(s); latest prompt=%r",
+            request.user.id,
+            len(messages),
+            latest[:200],
+        )
+
         entries = list(
             JournalEntry.objects.filter(user=request.user).order_by(
                 "-date", "-created_at"
-            )
+            )[:50]
         )
         if not entries:
             # No journal yet — still chat warmly in the present. The model
             # knows there is no memory context and will say so if asked.
             reply = chat_reply(messages, memories=None)
-            return Response(
-                {"reply": reply or "I'm always here to listen. What's on your mind?"}
+            return response_with_saved_turn(
+                reply or "I'm always here to listen. What's on your mind?"
             )
 
-        index = "\n".join(
-            f"{entry.date.isoformat()}: "
-            f"{entry.aid or entry.title or _one_line(entry.content)[:120]}"
-            for entry in entries
-        )
-
-        route = route_chat(messages, index)
-        intent = (route or {}).get("intent", "general")
-
-        if intent == "detail":
-            date = (route or {}).get("date")
-            entry = next(
-                (e for e in entries if e.date.isoformat() == date),
-                None,
+        # Everyday chat and new thoughts answer straight from the conversation.
+        # Only messages that plausibly reach back into the journal are routed,
+        # so a normal message can never become a date-confirmation question.
+        if not _looks_like_memory_query(messages):
+            logger.info("Chat routing skipped (everyday message)")
+            intended = "general"
+            reply = chat_reply(messages, memories=None)
+        else:
+            entry_by_date = {entry.date.isoformat(): entry for entry in entries}
+            index = "\n".join(
+                f"{entry.date.isoformat()}: "
+                f"{entry.title or _one_line(entry.content)[:120]}"
+                for entry in entries
             )
-            if entry is not None:
+
+            route = route_chat(messages, index) or {}
+            intended = route.get("intent", "general")
+            entry = entry_by_date.get(route.get("date") or "")
+
+            if intended == "detail" and entry is not None:
                 memories = (
                     f"Date: {entry.date.isoformat()}\n"
                     f"Title: {entry.title}\n"
@@ -335,50 +519,122 @@ class ChatView(APIView):
                     f"Content:\n{entry.content}"
                 )
                 reply = chat_reply(messages, memories)
+            elif intended == "ask_date" and entry is not None:
+                # Ask with the entry's own date and title so the question is
+                # grounded in something the user can actually recognise.
+                label = entry.title or _one_line(entry.content)[:60]
+                reply = f"Wait, do you mean {entry.date:%B %d, %Y}"
+                reply += f' — the day with "{label}"?' if label else "?"
             else:
-                reply = chat_reply(messages, None)
-        elif intent == "ask_date":
-            question = (route or {}).get("question")
-            reply = question or (
-                "Hmm, which day are you thinking of? Tell me the date "
-                "and I'll revisit it with you."
-            )
-        else:
-            # Everyday chat: no journal entries are surfaced. The AI simply
-            # keeps talking and matches the user's mood.
-            reply = chat_reply(messages, memories=None)
+                if intended != "general":
+                    logger.info(
+                        "Chat routing: %s for unresolved date %r; "
+                        "answering generally instead.",
+                        intended,
+                        route.get("date"),
+                    )
+                intended = "general"
+                reply = chat_reply(messages, memories=None)
 
         if not reply:
-            return Response(
-                {"reply": "I'm always here to listen. What's on your mind?"}
+            logger.warning(
+                "Chat reply unavailable (intent=%s); sending fallback.", intended
             )
-        return Response({"reply": reply})
+            return response_with_saved_turn(
+                "I'm always here to listen. What's on your mind?"
+            )
+        logger.info("Chat reply ready (intent=%s)", intended)
+        return response_with_saved_turn(reply)
+
+
+class ChatSessionView(APIView):
+    """Read or replace the authenticated user's transcript for one calendar day."""
+
+    def get(self, request):
+        raw_date = (request.query_params.get("date") or "").strip()
+        try:
+            day = date_type.fromisoformat(raw_date)
+        except ValueError:
+            return Response(
+                {"detail": "Date must be in YYYY-MM-DD format."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        session = ChatSession.objects.filter(user=request.user, date=day).first()
+        return Response(
+            {
+                "date": day.isoformat(),
+                "messages": session.messages if session is not None else [],
+                "journalized_message_count": (
+                    session.journalized_message_count if session is not None else 0
+                ),
+            }
+        )
+
+    def post(self, request):
+        raw_date = (request.data.get("date") or "").strip()
+        try:
+            day = date_type.fromisoformat(raw_date)
+        except ValueError:
+            return Response(
+                {"detail": "Date must be in YYYY-MM-DD format."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        messages = request.data.get("messages")
+        if not isinstance(messages, list):
+            return Response(
+                {"detail": "A messages list is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        transcript = [
+            {
+                "role": message.get("role"),
+                "content": (message.get("content") or "").strip(),
+            }
+            for message in messages
+            if isinstance(message, dict)
+            and message.get("role") in {"user", "assistant"}
+            and (message.get("content") or "").strip()
+        ]
+        if not transcript or not any(
+            message["role"] == "user" for message in transcript
+        ):
+            return Response(
+                {"detail": "A transcript with user messages is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        session, _ = ChatSession.objects.get_or_create(
+            user=request.user,
+            date=day,
+        )
+        session.messages = transcript
+        session.save(update_fields=["messages", "updated_at"])
+        return Response({"date": day.isoformat(), "messages": session.messages})
 
 
 class ChatEodView(APIView):
-    """Finalize a finished 24-hour chat window (00:00-00:00, device-local date)
-    into a journal entry.
-
-    The phone caches the day's AI chat transcript locally and calls this once
-    when the day rolls over. The raw transcript is stored on a ChatSession row
-    (unique per user + date, so retries never duplicate the journal) and
-    journalized with the cheap flash-lite model into a first-person diary entry
-    that weaves in the AI dialogue. The resulting entry is saved as a normal
-    JournalEntry for that date, so it shows up everywhere a journal does. When
-    Gemini is unavailable the session stays pending and the app retries later.
-    """
+    """Merge new chat messages into that day's journal, immediately or at five turns."""
 
     def post(self, request):
         raw_date = (request.data.get("date") or "").strip()
         messages = request.data.get("messages")
+        force = request.data.get("force", True)
+        if not isinstance(force, bool):
+            return Response(
+                {"detail": "Force must be a boolean."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if not raw_date:
             return Response(
                 {"detail": "A date is required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if not isinstance(messages, list) or not messages:
+        if messages is not None and (not isinstance(messages, list) or not messages):
             return Response(
-                {"detail": "A non-empty messages list is required."},
+                {"detail": "Messages must be a non-empty list when provided."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -395,85 +651,156 @@ class ChatEodView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        transcript = [
-            {
-                "role": msg.get("role"),
-                "content": (msg.get("content") or "").strip(),
-            }
-            for msg in messages
-            if isinstance(msg, dict)
-            and msg.get("role") in {"user", "assistant"}
-            and (msg.get("content") or "").strip()
-        ]
-        if not any(m["role"] == "user" for m in transcript):
-            return Response(
-                {"detail": "A transcript with user messages is required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        session, _ = ChatSession.objects.get_or_create(
-            user=request.user,
-            date=day,
-            defaults={"messages": transcript},
-        )
-
-        # Idempotent: an already-finalized day just returns its journal.
-        if session.status == ChatSession.Status.FINALIZED and session.journal_entry_id:
-            return Response(
+        incoming_transcript = None
+        if messages is not None:
+            incoming_transcript = [
                 {
-                    "entry": JournalEntrySerializer(session.journal_entry).data,
-                    "finalized": True,
+                    "role": msg.get("role"),
+                    "content": (msg.get("content") or "").strip(),
                 }
-            )
+                for msg in messages
+                if isinstance(msg, dict)
+                and msg.get("role") in {"user", "assistant"}
+                and (msg.get("content") or "").strip()
+            ]
+            if not any(message["role"] == "user" for message in incoming_transcript):
+                return Response(
+                    {"detail": "A transcript with user messages is required."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-        enriched = journalize_chat(transcript, date=day)
-        if enriched is None:
-            # Keep the session pending so the app retries on its next launch.
-            if session.status == ChatSession.Status.PENDING:
-                session.messages = transcript
-                session.save(update_fields=["messages", "updated_at"])
-            return Response(
-                {
-                    "entry": None,
-                    "finalized": False,
-                    "error": "Could not journalize the conversation yet.",
-                },
-                status=status.HTTP_200_OK,
-            )
-
-        entry = session.journal_entry
-        if entry is None:
-            entry = JournalEntry.objects.create(
+        with _finalize_lock(request.user.id, day):
+            session = ChatSession.objects.filter(
                 user=request.user,
                 date=day,
-                title=enriched.get("title") or "Day of conversation",
-                content=enriched.get("content") or "",
-                mood=enriched.get("mood") or "",
-                type=JournalEntry.EntryType.TEXT,
-                aid=enriched.get("aid") or _one_line(
-                    " ".join(m["content"] for m in transcript)
-                ),
+            ).first()
+            if session is None:
+                if incoming_transcript is None:
+                    return Response(
+                        {
+                            "entry": None,
+                            "finalized": False,
+                            "journalized_message_count": 0,
+                        }
+                    )
+                session = ChatSession.objects.create(
+                    user=request.user,
+                    date=day,
+                    messages=incoming_transcript,
+                )
+            elif incoming_transcript is not None:
+                session.messages = incoming_transcript
+                session.save(update_fields=["messages", "updated_at"])
+
+            transcript = session.messages or []
+            if not any(message["role"] == "user" for message in transcript):
+                return Response(
+                    {"detail": "A transcript with user messages is required."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            logger.info(
+                "EOD finalize request from user %s for %s: %d message(s)",
+                request.user.id,
+                day.isoformat(),
+                len(transcript),
             )
-        else:
-            entry.title = enriched.get("title") or entry.title
-            entry.content = enriched.get("content") or entry.content
-            entry.mood = enriched.get("mood") or entry.mood
-            entry.aid = enriched.get("aid") or entry.aid
-            entry.save()
 
-        session.status = ChatSession.Status.FINALIZED
-        session.journal_entry = entry
-        session.messages = transcript
-        session.save()
+            processed_count = min(
+                session.journalized_message_count,
+                len(transcript),
+            )
+            if processed_count == len(transcript):
+                entry = session.journal_entry or _day_entry(request.user, day)
+                return Response(
+                    {
+                        "entry": (
+                            JournalEntrySerializer(entry).data
+                            if entry is not None
+                            else None
+                        ),
+                        "finalized": entry is not None,
+                        "journalized_message_count": processed_count,
+                    }
+                )
 
-        refresh_bio(request.user)
-        refresh_day_streak(request.user)
-        return Response(
-            {
-                "entry": JournalEntrySerializer(entry).data,
-                "finalized": True,
-            }
-        )
+            new_messages = transcript[processed_count:]
+            pending_user_chats = sum(
+                message.get("role") == "user" for message in new_messages
+            )
+            if not force and pending_user_chats < 5:
+                entry = session.journal_entry or _day_entry(request.user, day)
+                return Response(
+                    {
+                        "entry": (
+                            JournalEntrySerializer(entry).data
+                            if entry is not None
+                            else None
+                        ),
+                        "finalized": False,
+                        "pending_user_chats": pending_user_chats,
+                        "journalized_message_count": processed_count,
+                    }
+                )
+
+            entry = session.journal_entry or _day_entry(request.user, day)
+            if entry is not None:
+                enriched = journalize_chat_continuation(entry, new_messages)
+                if enriched is None:
+                    return Response(
+                        {
+                            "entry": JournalEntrySerializer(entry).data,
+                            "finalized": False,
+                            "error": "Could not journalize the conversation yet.",
+                        },
+                        status=status.HTTP_200_OK,
+                    )
+
+                entry.title = enriched.get("title") or entry.title
+                entry.content = enriched.get("content") or entry.content
+                entry.mood = enriched.get("mood") or entry.mood
+                entry.save()
+            else:
+                enriched = journalize_chat(new_messages, date=day)
+                if enriched is None:
+                    return Response(
+                        {
+                            "entry": None,
+                            "finalized": False,
+                            "error": "Could not journalize the conversation yet.",
+                        },
+                        status=status.HTTP_200_OK,
+                    )
+
+                entry = JournalEntry.objects.create(
+                    user=request.user,
+                    date=day,
+                    title=enriched.get("title") or "Day of conversation",
+                    content=enriched.get("content") or "",
+                    mood=enriched.get("mood") or "",
+                    type=JournalEntry.EntryType.TEXT,
+                )
+
+            session.journal_entry = entry
+            session.journalized_message_count = len(transcript)
+            session.status = ChatSession.Status.FINALIZED
+            session.save(
+                update_fields=[
+                    "journal_entry",
+                    "journalized_message_count",
+                    "status",
+                    "updated_at",
+                ]
+            )
+            refresh_bio(request.user)
+            refresh_day_streak(request.user)
+            return Response(
+                {
+                    "entry": JournalEntrySerializer(entry).data,
+                    "finalized": True,
+                    "journalized_message_count": len(transcript),
+                }
+            )
 
 
 class SummaryView(APIView):

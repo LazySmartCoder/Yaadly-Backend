@@ -71,7 +71,6 @@ class JournalEntrySerializer(serializers.ModelSerializer):
             "content",
             "mood",
             "type",
-            "aid",
             "created_at",
             "updated_at",
         ]

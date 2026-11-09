@@ -19,11 +19,6 @@ class JournalEntry(models.Model):
     content = models.TextField()
     mood = models.CharField(max_length=50, blank=True)
     type = models.CharField(max_length=10, choices=EntryType.choices, default=EntryType.TEXT)
-    aid = models.TextField(
-        blank=True,
-        default="",
-        help_text="Long, detailed one-line description of the entry.",
-    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -31,6 +26,12 @@ class JournalEntry(models.Model):
         ordering = ["-date", "-created_at"]
         indexes = [
             models.Index(fields=["user", "-date"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "date"],
+                name="unique_user_journal_day",
+            ),
         ]
 
     def __str__(self):
@@ -40,12 +41,11 @@ class JournalEntry(models.Model):
 class ChatSession(models.Model):
     """A single day window (00:00-00:00, device-local) of AI chat transcript.
 
-    The phone holds the day's chat in its local cache while the day is live.
-    When the day window ends, the app finalizes the transcript here exactly
-    once: the backend stores the raw messages, journalizes them via Gemini and
-    saves the result as a normal JournalEntry for that date. The row (and the
-    ``(user, date)`` uniqueness) make finalization idempotent, so a retry can
-    never duplicate the day's journal.
+    The backend stores each day's raw messages as the conversation happens.
+    When the day window ends, the app journalizes the transcript via the local
+    Ollama model and saves the result as a normal JournalEntry for that date.
+    The row (and the ``(user, date)`` uniqueness) make finalization idempotent,
+    so a retry can never duplicate the day's journal.
     """
 
     class Status(models.TextChoices):
@@ -60,6 +60,7 @@ class ChatSession(models.Model):
     )
     date = models.DateField()
     messages = models.JSONField(default=list)
+    journalized_message_count = models.PositiveIntegerField(default=0)
     status = models.CharField(
         max_length=16,
         choices=Status.choices,

@@ -1,4 +1,6 @@
+import ipaddress
 import os
+import socket
 import sys
 from datetime import timedelta
 from pathlib import Path
@@ -29,9 +31,45 @@ SECRET_KEY = env("SECRET_KEY", "dev-insecure-change-me")
 DEBUG = env("DEBUG", True, bool)
 ALLOWED_HOSTS = env("ALLOWED_HOSTS", "*", list)
 
+def _local_lan_hosts():
+    """This machine's private IPv4 addresses.
+
+    A physical device on the same Wi-Fi reaches ``runserver`` via the machine's
+    LAN IP, which changes with DHCP, so it is discovered at startup instead of
+    being hard-coded. Only private, non-loopback addresses are returned.
+    """
+    hosts = set()
+    try:
+        infos = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+    except OSError:
+        infos = []
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if ip.is_private and not ip.is_loopback:
+            hosts.add(str(ip))
+    # Primary outbound interface: the one Wi-Fi/LAN traffic actually uses.
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.connect(("8.8.8.8", 80))
+            addr = sock.getsockname()[0]
+        finally:
+            sock.close()
+        ip = ipaddress.ip_address(addr)
+        if ip.is_private and not ip.is_loopback:
+            hosts.add(str(ip))
+    except (OSError, ValueError):
+        pass
+    return hosts
+
+
 # Always accept the local dev machine's LAN IPs (physical device -> runserver),
 # even if a stale ALLOWED_HOSTS is already exported in the server process env.
-_DEV_LAN_HOSTS = ["192.168.43.159", "192.168.4.42", "localhost", "127.0.0.1"]
+_DEV_LAN_HOSTS = ["192.168.65.42", "192.168.43.159", "192.168.4.42", "localhost", "127.0.0.1"]
+_DEV_LAN_HOSTS.extend(sorted(_local_lan_hosts() - set(_DEV_LAN_HOSTS)))
 for _host in _DEV_LAN_HOSTS:
     if _host not in ALLOWED_HOSTS:
         ALLOWED_HOSTS.append(_host)
@@ -83,23 +121,25 @@ TEMPLATES = [
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
+# Local dev uses the bundled SQLite database by default. Set USE_POSTGRES=True
+# to point at the Supabase/PostgreSQL instance instead.
 DATABASES = {
     "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": env("POSTGRES_DB", "yaadly"),
-        "USER": env("POSTGRES_USER", "yaadly"),
-        "PASSWORD": env("POSTGRES_PASSWORD", "yaadly"),
-        "HOST": env("POSTGRES_HOST", "db"),
-        "PORT": env("POSTGRES_PORT", "5432"),
-        "OPTIONS": {"sslmode": env("POSTGRES_SSLMODE", "prefer")},
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / "db.sqlite3",
     }
 }
 
-if env("USE_SQLITE", False, bool):
+if env("USE_POSTGRES", False, bool):
     DATABASES = {
         "default": {
-            "ENGINE": "django.db.backends.sqlite3",
-            "NAME": BASE_DIR / "db.sqlite3",
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": env("POSTGRES_DB", "yaadly"),
+            "USER": env("POSTGRES_USER", "yaadly"),
+            "PASSWORD": env("POSTGRES_PASSWORD", "yaadly"),
+            "HOST": env("POSTGRES_HOST", "db"),
+            "PORT": env("POSTGRES_PORT", "5432"),
+            "OPTIONS": {"sslmode": env("POSTGRES_SSLMODE", "prefer")},
         }
     }
 
@@ -213,11 +253,13 @@ GOOGLE_CLIENT_ID = env(
     "121554443587-p34frc2hfd21ph1p7guvvpth1arcqlsu.apps.googleusercontent.com",
 )
 
-# Read from the environment only. Never commit a real key; the server provides
-# GEMINI_API_KEY via .env / the container environment. Unset means the Gemini
-# features degrade gracefully (see apps/journals/gemini.py, apps/push/gemini.py).
-GEMINI_API_KEY = env("GEMINI_API_KEY", "")
-GEMINI_MODEL = env("GEMINI_MODEL", "gemini-2.5-flash-lite")
+# Local Ollama server used for all AI features. No API key required. If the
+# server is unreachable the AI features degrade gracefully (see
+# apps/journals/ollama.py).
+OLLAMA_BASE_URL = env("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+OLLAMA_MODEL = env("OLLAMA_MODEL", "gemma3:4b")
+OLLAMA_TIMEOUT = env("OLLAMA_TIMEOUT", 180, int)
+OLLAMA_KEEP_ALIVE = env("OLLAMA_KEEP_ALIVE", "-1")
 
 # Firebase Cloud Messaging.
 # Credentials: either a path to the Firebase service-account JSON file, or the

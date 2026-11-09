@@ -1,0 +1,37 @@
+[2026-11-09 20:14:50,260] INFO apps.journals.views EOD finalize request from user 2 for 2026-11-09: 16 message(s)
+[2026-11-09 20:14:50,271] INFO apps.journals.ollama Ollama [journalize_continuation] -> http://127.0.0.1:11434 model=gemma3:4b max_tokens=700
+[2026-11-09 20:14:50,594] INFO apps.journals.views EOD finalize request from user 2 for 2026-11-09: 16 message(s)
+[2026-11-09 20:14:53,437] INFO django.server "GET /api/today-drops/ HTTP/1.1" 200 11
+[2026-11-09 20:14:53,509] INFO django.server - Broken pipe from ('192.168.132.42', 54851)
+[2026-11-09 20:16:45,911] INFO apps.journals.ollama Ollama [journalize_continuation] ok in 115.6s (prompt=681, eval=498 tokens)
+[2026-11-09 20:16:45,936] INFO apps.journals.ollama Ollama [build_bio] -> http://127.0.0.1:11434 model=gemma3:4b max_tokens=256
+[2026-11-09 20:18:03,608] INFO apps.journals.ollama Ollama [build_bio] ok in 77.7s (prompt=1388, eval=34 tokens)
+[2026-11-09 20:18:03,641] INFO apps.journals.views EOD finalize skipped for 2026-11-09: no new messages
+[2026-11-09 20:18:03,642] INFO django.server - Broken pipe from ('192.168.132.61', 42348)
+[2026-11-09 20:18:03,649] INFO django.server "POST /api/chat/eod/ HTTP/1.1" 200 2163
+[2026-11-09 20:18:03,651] INFO django.server - Broken pipe from ('192.168.132.61', 42350)
+[2026-11-09 20:18:19,895] INFO django.server "POST /api/push/token/ HTTP/1.1" 200 37
+[2026-11-09 20:18:20,348] INFO django.server "POST /api/auth/token/refresh/ HTTP/1.1" 200 244
+[2026-11-09 20:18:22,209] INFO django.server "GET /api/entries/ HTTP/1.1" 200 6095
+[2026-11-09 20:18:22,215] INFO django.server "POST /api/push/token/ HTTP/1.1" 200 37
+[2026-11-09 20:18:27,963] INFO django.server "GET /api/auth/me/ HTTP/1.1" 200 495
+[2026-11-09 20:18:28,037] INFO apps.journals.views Chat request from user 2: 17 message(s); latest prompt='h'
+[2026-11-09 20:18:28,040] INFO apps.journals.views Chat routing skipped (everyday message)
+[2026-11-09 20:18:28,041] INFO apps.journals.ollama Ollama [chat_reply] -> http://127.0.0.1:11434 model=gemma3:4b max_tokens=320
+[2026-11-09 20:18:34,505] INFO apps.journals.ollama Ollama [chat_reply] ok in 6.5s (prompt=478, eval=32 tokens)
+[2026-11-09 20:18:34,507] INFO apps.journals.views Chat reply ready (intent=general)
+[2026-11-09 20:18:34,509] INFO django.server "POST /api/chat/ HTTP/1.1" 200 148
+[2026-11-09 20:18:43,086] INFO django.server "GET /api/auth/me/ HTTP/1.1" 200 495
+[2026-11-09 20:18:43,121] INFO apps.journals.views Chat request from user 2: 19 message(s); latest prompt='u seem dull'
+[2026-11-09 20:18:43,123] INFO apps.journals.views Chat routing skipped (everyday message)
+[2026-11-09 20:18:43,124] INFO apps.journals.ollama Ollama [chat_reply] -> http://127.0.0.1:11434 model=gemma3:4b max_tokens=320
+[2026-11-09 20:18:53,911] INFO apps.journals.ollama Ollama [chat_reply] ok in 10.8s (prompt=524, eval=59 tokens)
+[2026-11-09 20:18:53,915] INFO apps.journals.views Chat reply ready (intent=general)
+[2026-11-09 20:18:53,919] INFO django.server "POST /api/chat/ HTTP/1.1" 200 241
+[2026-11-09 20:19:03,903] INFO django.server "GET /api/auth/me/ HTTP/1.1" 200 495
+[2026-11-09 20:19:04,020] INFO apps.journals.views Chat request from user 2: 21 message(s); latest prompt='ch'
+[2026-11-09 20:19:04,022] INFO apps.journals.views Chat routing skipped (everyday message)
+[2026-11-09 20:19:04,022] INFO apps.journals.ollama Ollama [chat_reply] -> http://127.0.0.1:11434 model=gemma3:4b max_tokens=320
+[2026-11-09 20:19:11,566] INFO apps.journals.ollama Ollama [chat_reply] ok in 7.5s (prompt=595, eval=34 tokens)
+[2026-11-09 20:19:11,569] INFO apps.journals.views Chat reply ready (intent=general)
+[2026-11-09 20:19:11,571] INFO django.server "POST /api/chat/ HTTP/1.1" 200 156

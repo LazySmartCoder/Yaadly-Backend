@@ -19,7 +19,7 @@ class JournalEntryAPITests(TestCase):
         self.user = get_user_model().objects.create_user(username="alice", password="secret123")
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
-        # Never call the real Gemini API during tests.
+        # Never call the real local Ollama model during tests.
         self._journalize_patch = patch("apps.journals.views.journalize", return_value=None)
         self._journalize_patch.start()
         self._followup_patch = patch("apps.journals.views.ask_followup", return_value=None)
@@ -54,7 +54,7 @@ class JournalEntryAPITests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(JournalEntry.objects.get().user, self.user)
 
-    def test_create_entry_journalizes_with_gemini(self):
+    def test_create_entry_journalizes_with_ollama(self):
         enriched = {
             "title": "Lunch with family",
             "content": "Today was really amazing as we had lunch together.",
@@ -72,7 +72,7 @@ class JournalEntryAPITests(TestCase):
         self.assertEqual(entry.content, "Today was really amazing as we had lunch together.")
         self.assertEqual(entry.mood, "Joyful")
 
-    def test_create_entry_derives_title_when_gemini_unavailable(self):
+    def test_create_entry_derives_title_when_ollama_unavailable(self):
         response = self._post(
             reverse("entry-list"),
             {"date": "2026-08-05", "content": "today we had lunch together"},
@@ -186,12 +186,86 @@ class ChatEodTests(TestCase):
         self.user = get_user_model().objects.create_user(username="eod", password="secret123")
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
+        self._bio_patch = patch("apps.journals.views.refresh_bio")
+        self._bio_patch.start()
 
     def tearDown(self):
-        pass
+        self._bio_patch.stop()
 
     def _post(self, *args, **kwargs):
         return self.client.post(*args, HTTP_HOST="localhost", **kwargs)
+
+    def test_chat_session_is_saved_and_loaded_by_date(self):
+        today = date.today().isoformat()
+        yesterday = _days_ago(1)
+        transcript = self._transcript()
+
+        save = self._post(
+            reverse("chat-session"),
+            {"date": today, "messages": transcript},
+            format="json",
+        )
+        self.assertEqual(save.status_code, status.HTTP_200_OK)
+        self.assertEqual(ChatSession.objects.count(), 1)
+
+        load_today = self.client.get(
+            reverse("chat-session"),
+            {"date": today},
+            HTTP_HOST="localhost",
+        )
+        load_yesterday = self.client.get(
+            reverse("chat-session"),
+            {"date": yesterday},
+            HTTP_HOST="localhost",
+        )
+        self.assertEqual(load_today.data["messages"], transcript)
+        self.assertEqual(load_today.data["journalized_message_count"], 0)
+        self.assertEqual(load_yesterday.data["messages"], [])
+
+    def test_chat_sessions_are_owner_scoped(self):
+        today = date.today().isoformat()
+        self._post(
+            reverse("chat-session"),
+            {"date": today, "messages": self._transcript()},
+            format="json",
+        )
+
+        other = get_user_model().objects.create_user(username="chat-owner")
+        self.client.force_authenticate(user=other)
+        response = self.client.get(
+            reverse("chat-session"),
+            {"date": today},
+            HTTP_HOST="localhost",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["messages"], [])
+
+    def test_eod_uses_backend_stored_transcript(self):
+        transcript = self._transcript()
+        day = _days_ago(1)
+        self._post(
+            reverse("chat-session"),
+            {"date": day, "messages": transcript},
+            format="json",
+        )
+        enriched = {
+            "title": "A saved day",
+            "content": "The saved conversation.",
+            "mood": "Calm",
+            "aid": "A saved day.",
+        }
+        with (
+            patch("apps.journals.views.journalize_chat", return_value=enriched) as journalize,
+            patch("apps.journals.views.refresh_bio"),
+        ):
+            response = self._post(
+                reverse("chat-eod"),
+                {"date": day},
+                format="json",
+            )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["finalized"])
+        journalize.assert_called_once_with(transcript, date=date.fromisoformat(day))
 
     def _transcript(self):
         return [
@@ -199,6 +273,20 @@ class ChatEodTests(TestCase):
             {"role": "assistant", "content": "That sounds heavy. What happened?"},
             {"role": "user", "content": "My manager moved my project to Friday."},
         ]
+
+    def _chat_turns(self, start, count):
+        messages = []
+        for index in range(start, start + count):
+            messages.extend(
+                [
+                    {"role": "user", "content": f"My thought number {index}."},
+                    {
+                        "role": "assistant",
+                        "content": f"I hear your thought number {index}.",
+                    },
+                ]
+            )
+        return messages
 
     def test_eod_requires_authentication(self):
         self.client.force_authenticate(user=None)
@@ -209,13 +297,14 @@ class ChatEodTests(TestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
-    def test_eod_requires_date_and_messages(self):
+    def test_eod_requires_date_and_saved_transcript(self):
         response = self._post(reverse("chat-eod"), {"messages": []}, format="json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         response = self._post(
             reverse("chat-eod"), {"date": _days_ago(1)}, format="json"
         )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["finalized"])
 
     def test_eod_rejects_bad_and_future_dates(self):
         response = self._post(
@@ -293,7 +382,224 @@ class ChatEodTests(TestCase):
         self.assertEqual(ChatSession.objects.count(), 1)
         self.assertEqual(second.data["entry"]["id"], first.data["entry"]["id"])
 
-    def test_eod_stays_pending_when_gemini_unavailable(self):
+    def test_later_same_day_conversation_extends_single_journal_entry(self):
+        day = _days_ago(1)
+        first_conversation = self._transcript()
+        second_conversation = [
+            {"role": "user", "content": "I went out for ice cream."},
+            {"role": "assistant", "content": "That sounds like a nice treat."},
+        ]
+        session_url = reverse("chat-session")
+        self._post(
+            session_url,
+            {"date": day, "messages": first_conversation},
+            format="json",
+        )
+        first_summary = {
+            "title": "A difficult workday",
+            "content": "I had a hard day at work.",
+            "mood": "Anxious",
+            "aid": "A difficult workday.",
+        }
+        with patch(
+            "apps.journals.views.journalize_chat",
+            return_value=first_summary,
+        ) as journalize:
+            first = self._post(reverse("chat-eod"), {"date": day}, format="json")
+        journalize.assert_called_once_with(
+            first_conversation,
+            date=date.fromisoformat(day),
+        )
+        self.assertTrue(first.data["finalized"])
+        entry_id = first.data["entry"]["id"]
+
+        full_transcript = first_conversation + second_conversation
+        self._post(
+            session_url,
+            {"date": day, "messages": full_transcript},
+            format="json",
+        )
+        continuation = {
+            "title": "A hard day with a sweet ending",
+            "content": "I had a hard day at work, then enjoyed ice cream.",
+            "mood": "Mixed",
+            "aid": "A hard day with a sweet ending.",
+        }
+        with patch(
+            "apps.journals.views.journalize_chat_continuation",
+            return_value=continuation,
+        ) as merge:
+            second = self._post(reverse("chat-eod"), {"date": day}, format="json")
+
+        merge.assert_called_once_with(
+            JournalEntry.objects.get(id=entry_id),
+            second_conversation,
+        )
+        self.assertTrue(second.data["finalized"])
+        self.assertEqual(second.data["entry"]["id"], entry_id)
+        self.assertEqual(JournalEntry.objects.filter(user=self.user, date=day).count(), 1)
+        self.assertEqual(
+            ChatSession.objects.get(user=self.user, date=day).journalized_message_count,
+            len(full_transcript),
+        )
+
+        with patch(
+            "apps.journals.views.journalize_chat_continuation"
+        ) as merge_again:
+            repeated = self._post(reverse("chat-eod"), {"date": day}, format="json")
+        merge_again.assert_not_called()
+        self.assertEqual(repeated.data["entry"]["id"], entry_id)
+
+    def test_chat_merges_into_existing_journal_entry_for_same_day(self):
+        day = date.today()
+        entry = JournalEntry.objects.create(
+            user=self.user,
+            date=day,
+            title="A journal entry already exists",
+            content="I wrote down something earlier today.",
+        )
+        transcript = self._transcript()
+        self._post(
+            reverse("chat-session"),
+            {"date": day.isoformat(), "messages": transcript},
+            format="json",
+        )
+        merged = {
+            "title": "An expanded entry",
+            "content": "I wrote earlier and later shared a hard workday.",
+            "mood": "Reflective",
+            "aid": "An expanded entry.",
+        }
+        with patch(
+            "apps.journals.views.journalize_chat_continuation",
+            return_value=merged,
+        ) as continuation:
+            response = self._post(
+                reverse("chat-eod"),
+                {"date": day.isoformat()},
+                format="json",
+            )
+
+        continuation.assert_called_once_with(entry, transcript)
+        self.assertTrue(response.data["finalized"])
+        self.assertEqual(response.data["entry"]["id"], str(entry.id))
+        self.assertEqual(
+            JournalEntry.objects.filter(user=self.user, date=day).count(),
+            1,
+        )
+
+    def test_chat_checkpoint_summarizes_every_five_user_messages(self):
+        day = _days_ago(1)
+        session_url = reverse("chat-session")
+        checkpoint_url = reverse("chat-eod")
+        transcript = self._chat_turns(1, 4)
+        self._post(
+            session_url,
+            {"date": day, "messages": transcript},
+            format="json",
+        )
+
+        with patch("apps.journals.views.journalize_chat") as journalize:
+            response = self._post(
+                checkpoint_url,
+                {"date": day, "force": False},
+                format="json",
+            )
+        self.assertFalse(response.data["finalized"])
+        self.assertEqual(response.data["pending_user_chats"], 4)
+        journalize.assert_not_called()
+        self.assertEqual(JournalEntry.objects.count(), 0)
+
+        transcript = self._chat_turns(1, 5)
+        self._post(
+            session_url,
+            {"date": day, "messages": transcript},
+            format="json",
+        )
+        first_summary = {
+            "title": "Five thoughts",
+            "content": "I shared five thoughts.",
+            "mood": "Reflective",
+            "aid": "Five thoughts.",
+        }
+        with patch(
+            "apps.journals.views.journalize_chat",
+            return_value=first_summary,
+        ) as journalize:
+            first = self._post(
+                checkpoint_url,
+                {"date": day, "force": False},
+                format="json",
+            )
+        journalize.assert_called_once_with(
+            transcript,
+            date=date.fromisoformat(day),
+        )
+        self.assertTrue(first.data["finalized"])
+        entry_id = first.data["entry"]["id"]
+        self.assertEqual(first.data["journalized_message_count"], 10)
+
+        transcript = self._chat_turns(1, 10)
+        self._post(
+            session_url,
+            {"date": day, "messages": transcript},
+            format="json",
+        )
+        continuation = {
+            "title": "Ten thoughts",
+            "content": "I shared ten thoughts across the day.",
+            "mood": "Reflective",
+            "aid": "Ten thoughts.",
+        }
+        with patch(
+            "apps.journals.views.journalize_chat_continuation",
+            return_value=continuation,
+        ) as merge:
+            second = self._post(
+                checkpoint_url,
+                {"date": day, "force": False},
+                format="json",
+            )
+        merge.assert_called_once_with(
+            JournalEntry.objects.get(id=entry_id),
+            transcript[10:],
+        )
+        self.assertTrue(second.data["finalized"])
+        self.assertEqual(second.data["entry"]["id"], entry_id)
+        self.assertEqual(second.data["journalized_message_count"], 20)
+        self.assertEqual(
+            JournalEntry.objects.filter(user=self.user, date=day).count(),
+            1,
+        )
+
+    def test_forced_checkpoint_saves_before_five_user_messages(self):
+        day = _days_ago(1)
+        transcript = self._chat_turns(1, 2)
+        self._post(
+            reverse("chat-session"),
+            {"date": day, "messages": transcript},
+            format="json",
+        )
+        summary = {
+            "title": "Two thoughts",
+            "content": "I shared a couple of thoughts.",
+            "mood": "Reflective",
+            "aid": "Two thoughts.",
+        }
+        with patch(
+            "apps.journals.views.journalize_chat",
+            return_value=summary,
+        ) as journalize:
+            response = self._post(
+                reverse("chat-eod"),
+                {"date": day, "force": True},
+                format="json",
+            )
+        journalize.assert_called_once()
+        self.assertTrue(response.data["finalized"])
+        self.assertEqual(JournalEntry.objects.filter(user=self.user, date=day).count(), 1)
+
+    def test_eod_stays_pending_when_ollama_unavailable(self):
         with patch("apps.journals.views.journalize_chat", return_value=None):
             response = self._post(
                 reverse("chat-eod"),
@@ -586,8 +892,50 @@ class ChatTests(TestCase):
                 format="json",
             )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["reply"], "Are you talking about August 6?")
+        # The confirmation is grounded in the entry's own date and title
+        # instead of the model's free-form question.
+        self.assertIn("August 06, 2026", response.data["reply"])
+        self.assertIn("Day", response.data["reply"])
         mocked.assert_not_called()
+
+    def test_chat_does_not_route_everyday_message(self):
+        JournalEntry.objects.create(
+            user=self.user, date="2026-08-06", title="Day", content="We hiked the hills together."
+        )
+        with patch(
+            "apps.journals.views.route_chat",
+            return_value={"intent": "ask_date", "date": "2026-08-06"},
+        ) as routed, patch(
+            "apps.journals.views.chat_reply", return_value="Tell me about your day."
+        ) as replied:
+            response = self._post(
+                reverse("chat"),
+                {"messages": [{"role": "user", "content": "I had a long, quiet day today."}]},
+                format="json",
+            )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["reply"], "Tell me about your day.")
+        routed.assert_not_called()
+        self.assertIsNone(replied.call_args.kwargs["memories"])
+
+    def test_chat_unknown_date_falls_back_to_general(self):
+        JournalEntry.objects.create(
+            user=self.user, date="2026-08-06", title="Day", content="We hiked the hills together."
+        )
+        with patch(
+            "apps.journals.views.route_chat",
+            return_value={"intent": "detail", "date": "2026-01-01"},
+        ), patch(
+            "apps.journals.views.chat_reply", return_value="Let's talk about it."
+        ) as replied:
+            response = self._post(
+                reverse("chat"),
+                {"messages": [{"role": "user", "content": "Remember that day we hiked?"}]},
+                format="json",
+            )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["reply"], "Let's talk about it.")
+        self.assertIsNone(replied.call_args.kwargs["memories"])
 
     def test_chat_stays_present_without_entries(self):
         with patch(
@@ -602,6 +950,43 @@ class ChatTests(TestCase):
         self.assertEqual(response.data["reply"], "Tell me more about it.")
         self.assertIsNone(mocked.call_args.kwargs["memories"])
 
+    def test_chat_uses_and_saves_same_day_backend_transcript(self):
+        day = date.today().isoformat()
+        with patch(
+            "apps.journals.views.chat_reply",
+            side_effect=["Hi, I'm listening.", "You mentioned work earlier."],
+        ) as mocked:
+            first = self._post(
+                reverse("chat"),
+                {"date": day, "message": "I had a hard day at work."},
+                format="json",
+            )
+            second = self._post(
+                reverse("chat"),
+                {"date": day, "message": "Do you remember what I said?"},
+                format="json",
+            )
+
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            mocked.call_args_list[1].args[0],
+            [
+                {"role": "user", "content": "I had a hard day at work."},
+                {"role": "assistant", "content": "Hi, I'm listening."},
+                {"role": "user", "content": "Do you remember what I said?"},
+            ],
+        )
+        self.assertEqual(
+            ChatSession.objects.get(user=self.user, date=day).messages,
+            [
+                {"role": "user", "content": "I had a hard day at work."},
+                {"role": "assistant", "content": "Hi, I'm listening."},
+                {"role": "user", "content": "Do you remember what I said?"},
+                {"role": "assistant", "content": "You mentioned work earlier."},
+            ],
+        )
+
     def test_chat_falls_back_when_model_unavailable(self):
         with patch("apps.journals.views.chat_reply", return_value=None):
             response = self._post(
@@ -611,6 +996,19 @@ class ChatTests(TestCase):
             )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertTrue(response.data["reply"])
+
+
+class OllamaWarmupTests(TestCase):
+    def test_warmup_loads_model_and_keeps_it_resident(self):
+        from .ollama import warm_model
+
+        with patch("apps.journals.ollama.requests.post") as post:
+            warm_model()
+
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(payload["keep_alive"], -1)
+        self.assertEqual(payload["options"]["num_predict"], 1)
+        self.assertEqual(post.call_args.kwargs["timeout"], 45)
 
 
 def _fake_image(name="photo.jpg"):
