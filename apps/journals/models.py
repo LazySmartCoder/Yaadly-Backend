@@ -90,7 +90,7 @@ class ChatSession(models.Model):
 
 
 class Gallery(models.Model):
-    """A photo attached to a journal entry.
+    """A photo attached to a journal entry or an in-progress daily chat.
 
     The image itself lives in the configured object storage bucket; this row
     only stores the public URL the object storage returns for it.
@@ -101,6 +101,15 @@ class Gallery(models.Model):
         JournalEntry,
         on_delete=models.CASCADE,
         related_name="gallery_photos",
+        null=True,
+        blank=True,
+    )
+    chat_session = models.ForeignKey(
+        ChatSession,
+        on_delete=models.CASCADE,
+        related_name="gallery_photos",
+        null=True,
+        blank=True,
     )
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,

@@ -14,6 +14,7 @@ class UserSerializer(serializers.ModelSerializer):
     addresses = serializers.SerializerMethodField()
     day_streak = serializers.SerializerMethodField()
     premium_user = serializers.SerializerMethodField()
+    theme = serializers.SerializerMethodField()
 
     class Meta:
         model = get_user_model()
@@ -29,6 +30,7 @@ class UserSerializer(serializers.ModelSerializer):
             "addresses",
             "day_streak",
             "premium_user",
+            "theme",
         ]
 
     def _profile(self, obj):
@@ -72,9 +74,19 @@ class UserSerializer(serializers.ModelSerializer):
         profile = self._profile(obj)
         return bool(profile and profile.premium_user)
 
+    def get_theme(self, obj):
+        profile = self._profile(obj)
+        return profile.theme if profile and profile.theme else "black"
+
 
 class GoogleAuthSerializer(serializers.Serializer):
     id_token = serializers.CharField(trim_whitespace=False)
+
+
+class ThemeSerializer(serializers.Serializer):
+    theme = serializers.ChoiceField(
+        choices=["green", "pink", "blue", "black", "orange", "yellow"]
+    )
 
 
 class GoogleProfileSerializer(serializers.Serializer):

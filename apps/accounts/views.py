@@ -18,6 +18,7 @@ from .serializers import (
     DeleteAccountSerializer,
     GoogleAuthSerializer,
     GoogleProfileSerializer,
+    ThemeSerializer,
     UserSerializer,
 )
 from .services import fetch_google_profile, revoke_google_token
@@ -92,7 +93,9 @@ class GoogleLoginView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        user = self._get_or_create_user(google_id, email, name, avatar)
+        user, is_new_user = self._get_or_create_user(
+            google_id, email, name, avatar
+        )
         if user is None:
             return Response(
                 {"detail": "Could not create or find a matching account."},
@@ -105,11 +108,17 @@ class GoogleLoginView(APIView):
                 "access": str(refresh.access_token),
                 "refresh": str(refresh),
                 "user": UserSerializer(user).data,
+                "is_new_user": is_new_user,
             }
         )
 
     @staticmethod
     def _get_or_create_user(google_id, email, name, avatar):
+        """Returns ``(user, is_new_user)``.
+
+        ``is_new_user`` is only True when this call created the account, which
+        the app uses to show the one-time welcome onboarding after sign-up.
+        """
         with transaction.atomic():
             profile = UserProfile.objects.select_for_update().filter(
                 google_id=google_id
@@ -121,7 +130,7 @@ class GoogleLoginView(APIView):
                 profile.save(
                     update_fields=["display_name", "avatar_url", "updated_at"]
                 )
-                return profile.user
+                return profile.user, False
 
             existing = User.objects.filter(email__iexact=email).first()
             if existing:
@@ -133,7 +142,7 @@ class GoogleLoginView(APIView):
                         "avatar_url": avatar,
                     },
                 )
-                return existing
+                return existing, False
 
             try:
                 user = User.objects.create_user(username=email, email=email)
@@ -143,15 +152,15 @@ class GoogleLoginView(APIView):
                     display_name=name,
                     avatar_url=avatar,
                 )
-                return user
+                return user, True
             except IntegrityError as exc:
                 logger.warning("User creation raced for %s: %s", email, exc)
                 profile = UserProfile.objects.filter(google_id=google_id).first()
                 if profile:
-                    return profile.user
+                    return profile.user, False
                 existing = User.objects.filter(email__iexact=email).first()
                 if existing:
-                    return existing
+                    return existing, False
                 raise
 
 
@@ -199,6 +208,21 @@ class MeView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        return Response({"user": UserSerializer(request.user).data})
+
+
+class ThemeView(APIView):
+    """Save the user's chosen app theme on their profile."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = ThemeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        profile, _ = UserProfile.objects.get_or_create(user=request.user)
+        profile.theme = serializer.validated_data["theme"]
+        profile.save(update_fields=["theme", "updated_at"])
         return Response({"user": UserSerializer(request.user).data})
 
 

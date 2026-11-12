@@ -4,6 +4,16 @@ from django.conf import settings
 from django.db import models
 
 
+THEME_CHOICES = [
+    ("green", "Light green"),
+    ("pink", "Pink"),
+    ("blue", "Blue"),
+    ("black", "Black"),
+    ("orange", "Orange"),
+    ("yellow", "Yellow"),
+]
+
+
 class UserProfile(models.Model):
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
@@ -20,6 +30,9 @@ class UserProfile(models.Model):
     addresses = models.JSONField(default=list, blank=True)
     day_streak = models.PositiveIntegerField(default=0)
     premium_user = models.BooleanField(default=False)
+    theme = models.CharField(
+        max_length=20, choices=THEME_CHOICES, default="black", blank=True
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

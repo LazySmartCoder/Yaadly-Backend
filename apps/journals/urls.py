@@ -4,6 +4,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     ChatEodView,
     ChatSessionView,
+    ChatSessionPhotosView,
     ChatView,
     EntryPhotosView,
     FollowUpView,
@@ -23,6 +24,11 @@ urlpatterns = [
     path("today-drops/", TodayDropsView.as_view(), name="today-drops"),
     path("chat/", ChatView.as_view(), name="chat"),
     path("chat/session/", ChatSessionView.as_view(), name="chat-session"),
+    path(
+        "chat/session/photos/",
+        ChatSessionPhotosView.as_view(),
+        name="chat-session-photos",
+    ),
     path("chat/eod/", ChatEodView.as_view(), name="chat-eod"),
     path(
         "entries/<uuid:entry_id>/photos/",

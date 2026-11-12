@@ -68,7 +68,14 @@ def _local_lan_hosts():
 
 # Always accept the local dev machine's LAN IPs (physical device -> runserver),
 # even if a stale ALLOWED_HOSTS is already exported in the server process env.
-_DEV_LAN_HOSTS = ["192.168.65.42", "192.168.43.159", "192.168.4.42", "localhost", "127.0.0.1"]
+_DEV_LAN_HOSTS = [
+    "192.168.65.42",
+    "192.168.43.159",
+    "192.168.4.42",
+    "192.168.199.42",
+    "localhost",
+    "127.0.0.1",
+]
 _DEV_LAN_HOSTS.extend(sorted(_local_lan_hosts() - set(_DEV_LAN_HOSTS)))
 for _host in _DEV_LAN_HOSTS:
     if _host not in ALLOWED_HOSTS:

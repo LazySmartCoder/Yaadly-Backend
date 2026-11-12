@@ -243,10 +243,17 @@ class ChatEodTests(TestCase):
     def test_eod_uses_backend_stored_transcript(self):
         transcript = self._transcript()
         day = _days_ago(1)
-        self._post(
+        session_response = self._post(
             reverse("chat-session"),
             {"date": day, "messages": transcript},
             format="json",
+        )
+        self.assertEqual(session_response.status_code, status.HTTP_200_OK)
+        session = ChatSession.objects.get(user=self.user, date=day)
+        photo = Gallery.objects.create(
+            user=self.user,
+            chat_session=session,
+            url="https://bucket.example.com/gallery/chat/photo.jpg",
         )
         enriched = {
             "title": "A saved day",
@@ -266,6 +273,9 @@ class ChatEodTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertTrue(response.data["finalized"])
         journalize.assert_called_once_with(transcript, date=date.fromisoformat(day))
+        photo.refresh_from_db()
+        self.assertEqual(str(photo.entry_id), response.data["entry"]["id"])
+        self.assertIsNone(photo.chat_session_id)
 
     def _transcript(self):
         return [
@@ -1038,6 +1048,47 @@ class GalleryAPITests(TestCase):
         self.client.force_authenticate(user=None)
         response = self._post(self.url, {"photos": _fake_image()}, format="multipart")
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_chat_photo_upload_persists_to_the_users_day(self):
+        day = date.today().isoformat()
+        with patch("apps.journals.views.default_storage") as storage:
+            storage.save.side_effect = lambda name, content: name
+            storage.url.side_effect = lambda name: f"https://bucket.example.com/{name}"
+            response = self._post(
+                reverse("chat-session-photos"),
+                {"date": day, "photos": _fake_image()},
+                format="multipart",
+            )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        session = ChatSession.objects.get(user=self.user, date=day)
+        photo = Gallery.objects.get()
+        self.assertEqual(photo.chat_session, session)
+        self.assertIsNone(photo.entry_id)
+        self.assertTrue(photo.url.startswith("https://bucket.example.com/gallery/chat/"))
+
+    def test_chat_photo_list_is_limited_to_the_requested_day(self):
+        today = date.today()
+        today_session = ChatSession.objects.create(user=self.user, date=today)
+        yesterday_session = ChatSession.objects.create(
+            user=self.user, date=today - timedelta(days=1)
+        )
+        today_photo = Gallery.objects.create(
+            user=self.user,
+            chat_session=today_session,
+            url="https://bucket.example.com/today.jpg",
+        )
+        Gallery.objects.create(
+            user=self.user,
+            chat_session=yesterday_session,
+            url="https://bucket.example.com/yesterday.jpg",
+        )
+        response = self._get(
+            reverse("chat-session-photos"),
+            {"date": today.isoformat()},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["id"], str(today_photo.id))
 
     def test_list_requires_authentication(self):
         self.client.force_authenticate(user=None)

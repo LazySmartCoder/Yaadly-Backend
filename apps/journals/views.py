@@ -323,6 +323,91 @@ class EntryPhotosView(APIView):
         )
 
 
+class ChatSessionPhotosView(APIView):
+    """Persist photos for a day's chat, attaching them to its journal when available."""
+
+    parser_classes = [MultiPartParser, FormParser]
+
+    def _session(self, request, raw_date):
+        try:
+            day = date_type.fromisoformat(raw_date)
+        except ValueError:
+            return None, Response(
+                {"detail": "Date must be in YYYY-MM-DD format."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        session, _ = ChatSession.objects.get_or_create(user=request.user, date=day)
+        return session, None
+
+    def get(self, request):
+        session, error = self._session(
+            request, (request.query_params.get("date") or "").strip()
+        )
+        if error:
+            return error
+        photos = Gallery.objects.filter(chat_session=session)
+        if session.journal_entry_id is not None:
+            photos = Gallery.objects.filter(
+                Q(chat_session=session) | Q(entry_id=session.journal_entry_id)
+            )
+        return Response(GallerySerializer(photos, many=True).data)
+
+    def post(self, request):
+        session, error = self._session(
+            request, (request.data.get("date") or "").strip()
+        )
+        if error:
+            return error
+        files = request.FILES.getlist("photos")
+        if not files:
+            return Response(
+                {"detail": "At least one photo is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        entry = session.journal_entry
+        created = []
+        try:
+            for file in files:
+                parent = str(entry.id) if entry else f"chat/{session.id}"
+                name = (
+                    f"gallery/{parent}/{uuid.uuid4().hex}"
+                    f"{_image_extension(file)}"
+                )
+                stored = default_storage.save(
+                    name,
+                    ContentFile(file.read(), name=name),
+                )
+                created.append(
+                    Gallery.objects.create(
+                        entry=entry,
+                        chat_session=None if entry else session,
+                        user=request.user,
+                        url=default_storage.url(stored),
+                    )
+                )
+        except Exception:
+            logger.exception(
+                "Photo upload failed for chat session %s", session.id
+            )
+            for photo in created:
+                try:
+                    key = _storage_key(photo.url)
+                    if key:
+                        default_storage.delete(key)
+                except Exception:
+                    logger.exception("Could not remove partial chat photo upload")
+                photo.delete()
+            return Response(
+                {"detail": "Could not upload the photos. Please try again."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        return Response(
+            GallerySerializer(created, many=True).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
 def _storage_key(url):
     """Derives the storage name a Gallery URL points at, handling S3-style
     public URLs (which include the bucket name) and the local MEDIA_URL
@@ -782,6 +867,10 @@ class ChatEodView(APIView):
                 )
 
             session.journal_entry = entry
+            Gallery.objects.filter(chat_session=session).update(
+                entry=entry,
+                chat_session=None,
+            )
             session.journalized_message_count = len(transcript)
             session.status = ChatSession.Status.FINALIZED
             session.save(
