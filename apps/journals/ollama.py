@@ -16,7 +16,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "http://127.0.0.1:11434"
-DEFAULT_MODEL = "gemma3:4b"
+DEFAULT_MODEL = "gemma3:1b"
 DEFAULT_TIMEOUT = 120
 
 

@@ -264,7 +264,7 @@ GOOGLE_CLIENT_ID = env(
 # server is unreachable the AI features degrade gracefully (see
 # apps/journals/ollama.py).
 OLLAMA_BASE_URL = env("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-OLLAMA_MODEL = env("OLLAMA_MODEL", "gemma3:4b")
+OLLAMA_MODEL = env("OLLAMA_MODEL", "gemma3:1b")
 OLLAMA_TIMEOUT = env("OLLAMA_TIMEOUT", 180, int)
 OLLAMA_KEEP_ALIVE = env("OLLAMA_KEEP_ALIVE", "-1")
 
