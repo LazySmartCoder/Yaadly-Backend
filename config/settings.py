@@ -8,12 +8,12 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR / "apps"))
 
-ENV_PATH = BASE_DIR / ".env"
+ENV_PATH = BASE_DIR.parent / ".env"
 
 if ENV_PATH is not None:
     from dotenv import load_dotenv
 
-    load_dotenv(ENV_PATH)
+    load_dotenv(ENV_PATH, override=True)
 
 
 def env(key, default=None, cast=str):

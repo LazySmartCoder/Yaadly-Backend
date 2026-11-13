@@ -18,7 +18,7 @@ services:
     build: .
     restart: unless-stopped
     command: ./entrypoint.sh
-    env_file: .env
+    env_file: ../.env
     environment:
       - POSTGRES_HOST=db
       - USE_SQLITE=false
