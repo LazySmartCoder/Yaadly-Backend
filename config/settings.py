@@ -69,6 +69,7 @@ def _local_lan_hosts():
 # Always accept the local dev machine's LAN IPs (physical device -> runserver),
 # even if a stale ALLOWED_HOSTS is already exported in the server process env.
 _DEV_LAN_HOSTS = [
+    "api.yaadly.in",
     "192.168.65.42",
     "192.168.43.159",
     "192.168.4.42",
