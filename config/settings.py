@@ -129,25 +129,28 @@ TEMPLATES = [
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
-# Local dev uses the bundled SQLite database by default. Set USE_POSTGRES=True
-# to point at the Supabase/PostgreSQL instance instead.
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
-    }
-}
+# USE_SQLITE=True uses the bundled SQLite database; otherwise PostgreSQL is
+# used with the credentials supplied in the .env file.
+USE_SQLITE = env("USE_SQLITE", False, bool)
 
-if env("USE_POSTGRES", False, bool):
+if USE_SQLITE:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
+    }
+else:
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.postgresql",
-            "NAME": env("POSTGRES_DB", "yaadly"),
-            "USER": env("POSTGRES_USER", "yaadly"),
-            "PASSWORD": env("POSTGRES_PASSWORD", "yaadly"),
-            "HOST": env("POSTGRES_HOST", "db"),
+            "NAME": env("POSTGRES_DB", "yaadly_db"),
+            "USER": env("POSTGRES_USER", "yaadly_user"),
+            "PASSWORD": env("POSTGRES_PASSWORD", ""),
+            "HOST": env("POSTGRES_HOST", "127.0.0.1"),
             "PORT": env("POSTGRES_PORT", "5432"),
-            "OPTIONS": {"sslmode": env("POSTGRES_SSLMODE", "prefer")},
+            "CONN_MAX_AGE": 60,
+            "CONN_HEALTH_CHECKS": True,
         }
     }
 
